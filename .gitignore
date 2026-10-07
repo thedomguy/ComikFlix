@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+downloads/
+optimized/
+*.log
+/tmp/
+pages.json
+*.part
+*.tmp
