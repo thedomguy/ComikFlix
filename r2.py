@@ -174,6 +174,52 @@ class R2Client:
             body = e.read()[:300]
             raise RuntimeError(f"R2 HEAD failed ({e.code}) for {key}: {body!r}") from None
 
+    def delete(self, key: str) -> None:
+        """Delete one object; missing keys are ignored."""
+        req = urllib.request.Request(self._url(key), method="DELETE", headers=self._headers())
+        try:
+            urllib.request.urlopen(req, timeout=self.timeout).close()
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                body = e.read()[:300]
+                raise RuntimeError(f"R2 DELETE failed ({e.code}) for {key}: {body!r}") from None
+
+    def list_keys(self, prefix: str = "", *, per_page: int = 1000) -> list[str]:
+        """List object keys in the bucket (optionally under prefix)."""
+        keys: list[str] = []
+        cursor = None
+        while True:
+            q = [f"per_page={per_page}"]
+            if prefix:
+                q.append(f"prefix={urllib.parse.quote(prefix)}")
+            if cursor:
+                q.append(f"cursor={urllib.parse.quote(cursor)}")
+            url = (
+                f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}"
+                f"/r2/buckets/{self.bucket}/objects?{'&'.join(q)}"
+            )
+            req = urllib.request.Request(url, headers=self._headers())
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read())
+            result = data.get("result")
+            objs = result if isinstance(result, list) else (result or {}).get("objects") or []
+            for o in objs:
+                if isinstance(o, str):
+                    keys.append(o)
+                elif isinstance(o, dict):
+                    k = o.get("key") or o.get("name")
+                    if k:
+                        keys.append(k)
+            cursor = None
+            if isinstance(result, dict):
+                cursor = result.get("cursor") or result.get("truncated_token")
+            # Cloudflare often returns truncated via result_info
+            info = data.get("result_info") or {}
+            cursor = cursor or info.get("cursor")
+            if not cursor:
+                break
+        return keys
+
     def ensure_bucket(self) -> None:
         """Create the bucket if it does not already exist (idempotent)."""
         list_url = (
