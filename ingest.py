@@ -31,6 +31,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import asura_chapter_pages as asura
+import db
 import db_ingest
 import download
 import optimize_images
@@ -213,31 +214,131 @@ def _upload_cover(client: r2.R2Client, slug: str, cover_url: str) -> tuple[str, 
         return key, url
 
 
-def save_series_info(info: dict, overwrite: bool = False, client: r2.R2Client | None = None) -> None:
-    """Persist scraped series metadata to SQLite and upload cover to R2.
+def _asura_cdn_slug(slug: str) -> str:
+    return re.sub(r"-[0-9a-f]{8}$", "", slug)
+
+
+def _chapter_source_url(slug: str, chapter: str) -> str:
+    return CHAPTER_URL.format(slug=slug, chapter=chapter)
+
+
+def _page_cdn_url(slug: str, chapter: str, page_index: int, src: str | None = None) -> str:
+    if src and str(src).startswith("http"):
+        return src
+    return (
+        f"https://cdn.asurascans.com/asura-images/chapters/"
+        f"{_asura_cdn_slug(slug)}/{chapter}/{int(page_index) + 1:03d}.webp"
+    )
+
+
+def save_series_info(
+    info: dict,
+    overwrite: bool = False,
+    client: r2.R2Client | None = None,
+    *,
+    upload_cover: bool = False,
+) -> None:
+    """Persist scraped series metadata + chapter/source/cover URLs to SQLite.
+
+    Always records the Asura cover URL and per-chapter source URLs. Optionally
+    uploads the cover to R2 when upload_cover=True and a client is available
+    (stores r2 key in cover_key; cover_url stays the Asura source for CDN reading).
 
     Descriptive fields only fill when missing unless overwrite=True; volatile fields
     (status, rating, chapter lists, release forecast) always refresh.
     """
-    client = client or r2.get_client()
-    cover_key = cover_pub = None
-    cover = info.get("cover_url")
-    if cover:
+    cover_src = info.get("cover_url")  # Asura/original cover
+    cover_key = None
+    if upload_cover and cover_src:
         try:
-            uploaded = _upload_cover(client, info["slug"], cover)
+            cli = client or r2.get_client()
+            uploaded = _upload_cover(cli, info["slug"], cover_src)
             if uploaded:
-                cover_key, cover_pub = uploaded
+                cover_key, _r2_url = uploaded
         except Exception:
-            pass  # missing cover is cosmetic; series row still lands
+            pass  # cover upload is cosmetic
 
     release = estimate_release(info["chapters"], info.get("status"))
     db_ingest.upsert_series(
         info,
         cover_key=cover_key,
-        cover_url=cover_pub,
+        cover_url=cover_src,  # always the remote Asura/source cover URL
         release=release,
         overwrite=overwrite,
     )
+    _sync_chapter_metadata(info, overwrite=overwrite)
+
+
+def _sync_chapter_metadata(info: dict, *, overwrite: bool = False) -> None:
+    """Upsert chapter rows (source_url, dates, page stubs with CDN urls)."""
+    slug = info["slug"]
+    for c in info.get("chapters") or []:
+        number = c.get("number")
+        if number is None or c.get("locked"):
+            continue
+        chapter_id = str(number)
+        source_url = _chapter_source_url(slug, chapter_id)
+        published = c.get("published_at")
+        page_count = c.get("page_count")
+        try:
+            page_count = int(page_count) if page_count not in (None, "") else None
+        except (TypeError, ValueError):
+            page_count = None
+
+        existing = db.get_conn().execute(
+            "SELECT status, page_count FROM chapters WHERE series_slug=? AND chapter_id=?",
+            (slug, chapter_id),
+        ).fetchone()
+        status = existing["status"] if existing else "missing"
+        if page_count is None and existing and existing["page_count"]:
+            page_count = existing["page_count"]
+
+        db_ingest.upsert_chapter_row(
+            slug,
+            chapter_id,
+            source_url=source_url,
+            published_at=published,
+            page_count=page_count,
+            status=status,
+        )
+
+        # Ensure unprocessed chapters have CDN page rows so the reader can render.
+        existing_pages = db.list_pages(slug, chapter_id)
+        if existing_pages:
+            # Backfill missing cdn_url / keep existing r2 fields untouched.
+            pages = []
+            changed = False
+            for pg in existing_pages:
+                cdn = pg["cdn_url"] if "cdn_url" in pg.keys() else None
+                if not cdn:
+                    cdn = _page_cdn_url(slug, chapter_id, pg["page_index"])
+                    changed = True
+                pages.append({
+                    "page_index": pg["page_index"],
+                    "r2_key": pg["r2_key"],
+                    "public_url": pg["public_url"],
+                    "cdn_url": cdn,
+                    "aspect_ratio": pg["aspect_ratio"],
+                    "alt": pg["alt"],
+                })
+            if changed:
+                db_ingest.replace_pages(slug, chapter_id, pages)
+        elif page_count and page_count > 0:
+            db_ingest.replace_pages(
+                slug,
+                chapter_id,
+                [
+                    {
+                        "page_index": i,
+                        "r2_key": None,
+                        "public_url": None,
+                        "cdn_url": _page_cdn_url(slug, chapter_id, i),
+                        "aspect_ratio": None,
+                        "alt": None,
+                    }
+                    for i in range(page_count)
+                ],
+            )
 
 
 # --------------------------------------------------------------------------- chapters

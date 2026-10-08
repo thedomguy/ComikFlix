@@ -91,9 +91,10 @@ def upsert_series(
             "rating": info.get("rating") if info.get("rating") is not None else existing["rating"],
             "bookmarks": info.get("bookmarks") if info.get("bookmarks") is not None else existing["bookmarks"],
             "alt_titles": alts,
-            "cover_key": cover_key if cover_key else existing["cover_key"],
-            "cover_url": cover_url if cover_url else existing["cover_url"],
-            "source_url": keep("source_url", info.get("source_url")),
+            # Prefer freshly scraped cover/source URLs; keep prior only if scrape omitted them.
+            "cover_key": cover_key if cover_key is not None else existing["cover_key"],
+            "cover_url": cover_url if cover_url not in (None, "") else existing["cover_url"],
+            "source_url": info.get("source_url") or existing["source_url"],
             "remote_chapters": remote,
             "locked_chapters": locked,
             "release": release if release is not None else db._loads(existing["release_json"]),
