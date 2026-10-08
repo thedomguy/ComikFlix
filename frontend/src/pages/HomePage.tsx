@@ -1,8 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { bg, fmtSize } from "../lib/format";
 import { useLibrary } from "../lib/library";
-import { latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
-import type { Series } from "../lib/types";
+import { byReadingOrder, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
 import { SeriesCard } from "../components/SeriesCard";
 import "../styles/home.css";
 
@@ -38,8 +37,7 @@ export default function HomePage() {
 
   const rows = useMemo(() => {
     void progressVersion; // progress decides most rows
-    const at = (s: Series) => progressOf(s.slug)?.at || 0;
-    const started = library.filter((s) => progressOf(s.slug)).sort((a, b) => at(b) - at(a));
+    const started = library.filter((s) => progressOf(s.slug)).sort(byReadingOrder);
     const fresh = started.filter((s) => newSinceRead(s) > 0);
     const now = new Date();
     // One card per series: its earliest upcoming release this week.

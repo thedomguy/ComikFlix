@@ -49,7 +49,8 @@ export interface Progress {
   chapter: string;
   frac: number;
   read: string[];
-  at: number; // ms epoch
+  at: number; // ms epoch: last change from anywhere (sync)
+  readAt: number | null; // ms epoch: last read in the app; null if only imported (Jarvis)
 }
 
 export interface CatalogHit {

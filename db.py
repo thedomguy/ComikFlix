@@ -211,6 +211,11 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(pages)")}
     if "cdn_url" not in cols:
         conn.execute("ALTER TABLE pages ADD COLUMN cdn_url TEXT")
+    # read_at: last time progress came from actually reading in the app. updated_at also
+    # moves for imports (Jarvis/ChatGPT); reading order ("Continue Reading") uses read_at.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(progress)")}
+    if "read_at" not in cols:
+        conn.execute("ALTER TABLE progress ADD COLUMN read_at TEXT")
 
 
 def init_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -315,7 +320,7 @@ def put_settings(data: dict) -> dict:
 
 def get_progress() -> dict[str, dict]:
     rows = get_conn().execute(
-        "SELECT series_slug, chapter, frac, read_json, updated_at FROM progress"
+        "SELECT series_slug, chapter, frac, read_json, updated_at, read_at FROM progress"
     ).fetchall()
     out: dict[str, dict] = {}
     for row in rows:
@@ -325,16 +330,23 @@ def get_progress() -> dict[str, dict]:
             at = int(datetime.fromisoformat(row["updated_at"]).timestamp() * 1000)
         except (TypeError, ValueError):
             at = None
+        read_at = None
+        try:
+            read_at = int(datetime.fromisoformat(row["read_at"]).timestamp() * 1000) if row["read_at"] else None
+        except (TypeError, ValueError):
+            read_at = None
         out[row["series_slug"]] = {
             "chapter": row["chapter"],
             "frac": row["frac"] if row["frac"] is not None else 0,
             "read": _loads(row["read_json"], []),
             "at": at,
+            "read_at": read_at,  # last read in the app (None: progress only ever imported)
         }
     return out
 
 
-def put_progress_slug(slug: str, data: dict) -> dict:
+def put_progress_slug(slug: str, data: dict, *, reading: bool = True) -> dict:
+    """reading=False for imports (Jarvis/ChatGPT): progress changes, read_at doesn't."""
     slug = str(slug)
     chapter = data.get("chapter")
     frac = data.get("frac", 0)
@@ -355,12 +367,13 @@ def put_progress_slug(slug: str, data: dict) -> dict:
         updated = _now()
     with transaction() as conn:
         conn.execute(
-            "INSERT INTO progress(series_slug, chapter, frac, read_json, updated_at) "
-            "VALUES(?, ?, ?, ?, ?) "
+            "INSERT INTO progress(series_slug, chapter, frac, read_json, updated_at, read_at) "
+            "VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(series_slug) DO UPDATE SET "
             "chapter = excluded.chapter, frac = excluded.frac, "
-            "read_json = excluded.read_json, updated_at = excluded.updated_at",
-            (slug, None if chapter is None else str(chapter), frac, _dumps(read), updated),
+            "read_json = excluded.read_json, updated_at = excluded.updated_at, "
+            "read_at = COALESCE(excluded.read_at, progress.read_at)",
+            (slug, None if chapter is None else str(chapter), frac, _dumps(read), updated, updated if reading else None),
         )
     return get_progress().get(slug) or {
         "chapter": chapter,

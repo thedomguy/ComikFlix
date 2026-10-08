@@ -252,7 +252,7 @@ function renderControl(root, id, getLibrary) {
   );
   const picker = h("details", { class: "rm-picker" }, h("summary", {}, "Open a chapter…"), h("div", { class: "rm-picker-row" }, seriesSel, chapterSel), openBtn);
   // Default to the most recently read series.
-  const recent = Object.entries(store.get().progress || {}).sort((a, b) => (b[1].at || 0) - (a[1].at || 0))[0];
+  const recent = Object.entries(store.get().progress || {}).sort((a, b) => (b[1].readAt || 0) - (a[1].readAt || 0))[0];
   if (recent && lib.some((s) => s.slug === recent[0])) seriesSel.value = recent[0];
   fillChapters();
 

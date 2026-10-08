@@ -221,6 +221,7 @@ function applyProgressMap(map) {
       frac: entry.frac ?? 0,
       read: Array.isArray(entry.read) ? entry.read : [],
       at: entry.at || Date.now(),
+      readAt: entry.read_at ?? entry.readAt ?? null, // last read in the app (null: only imported)
     };
   }
 }
@@ -271,6 +272,7 @@ async function refreshProgress() {
       frac: e.frac ?? 0,
       read: Array.isArray(e.read) ? e.read : [],
       at: e.at || Date.now(),
+      readAt: e.read_at ?? null,
     };
     changed = true;
   }
@@ -312,7 +314,8 @@ export const store = {
     const cur = state.progress[slug] || { read: [] };
     const read = new Set(cur.read || []);
     if (done) read.add(chapter);
-    state.progress[slug] = { chapter, frac, read: [...read], at: Date.now() };
+    const now = Date.now();
+    state.progress[slug] = { chapter, frac, read: [...read], at: now, readAt: now };
     scheduleProgressWrite(slug);
     window.dispatchEvent(new Event("comikflix:progress"));
   },

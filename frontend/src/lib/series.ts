@@ -5,6 +5,15 @@ import type { Progress, Series } from "./types";
 
 export const progressOf = (slug: string): Progress | null => store.progress(slug) as Progress | null;
 
+/** When the user last actually read this series in the app (0: never; imports don't count). */
+export const lastReadAt = (slug: string) => progressOf(slug)?.readAt || 0;
+
+/** "Continue reading" order: last read in the app first; series whose progress was only
+ *  imported (e.g. set through ChatGPT) follow, A–Z, so imports never reshuffle the list. */
+export function byReadingOrder(a: Series, b: Series) {
+  return lastReadAt(b.slug) - lastReadAt(a.slug) || a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+}
+
 export function totalPages(s: Series) {
   return s.page_total ?? s.chapters.reduce((n, c) => n + (c.page_count || 0), 0);
 }

@@ -4,7 +4,7 @@ import { bg } from "../lib/format";
 import { findChapter, parseChapterQuery, searchLibrary } from "../lib/filters";
 import { startIngest } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
-import { progressOf, resumeTarget, unreadCount } from "../lib/series";
+import { byReadingOrder, progressOf, resumeTarget, unreadCount } from "../lib/series";
 import { toast } from "../lib/toast";
 import type { CatalogHit, Series } from "../lib/types";
 import "../styles/search.css";
@@ -298,7 +298,7 @@ function EmptyState({ library, onPick }: { library: Series[]; onPick: (q: string
   const recent = loadRecent();
   const reading = library
     .filter((s) => progressOf(s.slug))
-    .sort((a, b) => (progressOf(b.slug)?.at || 0) - (progressOf(a.slug)?.at || 0))
+    .sort(byReadingOrder)
     .slice(0, 6);
   return (
     <div className="sr-empty">

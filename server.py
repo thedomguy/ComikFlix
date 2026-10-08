@@ -512,7 +512,10 @@ class Handler(SimpleHTTPRequestHandler):
         parts = path.split("/")
         if len(parts) == 4 and parts[:3] == ["", "api", "progress"]:
             slug = unquote(parts[3])
-            return self.send_json(db.put_progress_slug(slug, data))
+            # The API token means another program (Jarvis) is importing progress, not the
+            # user reading: it must not reorder "Continue Reading".
+            reading = not auth.valid_api_token(self.headers.get("Authorization"))
+            return self.send_json(db.put_progress_slug(slug, data, reading=reading))
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_PATCH(self):

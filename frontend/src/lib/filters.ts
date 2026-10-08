@@ -1,6 +1,6 @@
 // Library filtering/sorting (LibraryPage) and fuzzy matching (SearchPage). Reading-state rules
 // come from lib/series so these agree with home and the cards.
-import { latestDate, newSinceRead, progressOf, unreadCount } from "./series";
+import { lastReadAt, latestDate, newSinceRead, progressOf, unreadCount } from "./series";
 import type { Chapter, Series } from "./types";
 
 // ---- text ----
@@ -80,7 +80,7 @@ export function searchLibrary(library: Series[], q: string, min = 0.3) {
   return library
     .map((s) => ({ s, score: seriesScore(s, q) }))
     .filter((r) => r.score >= min)
-    .sort((a, b) => b.score - a.score || (progressOf(b.s.slug)?.at || 0) - (progressOf(a.s.slug)?.at || 0));
+    .sort((a, b) => b.score - a.score || lastReadAt(b.s.slug) - lastReadAt(a.s.slug));
 }
 
 /** "sword sense 52", "absolute ch 52", "solo #12.5" -> { rest, num }. */
@@ -196,7 +196,7 @@ export function sortLibrary(list: Series[], sort: SortKey) {
     // started series by last read, then the rest by latest release
     recent: (s) => {
       const p = progressOf(s.slug);
-      return p ? 1e15 + p.at : latestDate(s);
+      return p ? 1e15 + (p.readAt || 0) : latestDate(s);
     },
     latest: latestDate,
     title: () => 0,

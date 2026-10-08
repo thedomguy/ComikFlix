@@ -157,7 +157,7 @@ function ListView({ list, sort, onSort }: { list: Series[]; sort: SortKey; onSor
             <span className="lib-c lib-status">{s.status || "—"}</span>
             <span className="lib-c">{s.chapters.length}</span>
             <span className="lib-c">{p ? unreadCount(s) : "—"}</span>
-            <span className="lib-c">{p ? ago(p.at) : "Not started"}</span>
+            <span className="lib-c">{p ? (p.readAt ? ago(p.readAt) : "Imported") : "Not started"}</span>
             <span className="lib-c">{last?.date ? `Ch. ${last.id} · ${fmtDate(last.date)}` : last ? `Ch. ${last.id}` : "—"}</span>
             <span className="lib-c">{s.rating ? `★ ${Number(s.rating).toFixed(1)}` : "—"}</span>
           </a>
