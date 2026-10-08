@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Local comic reader: a Netflix-style library over SQLite metadata (+ /media proxy).
+"""Local comic reader: a Netflix-style library over SQLite metadata.
 
 Usage:
     ./server.py [-p PORT] [--host HOST] [--no-open]
 
 Library metadata lives in SQLite (see db.py). Optional env COMIKFLIX_DB overrides the
-DB path (default: data/comikflix.db). Binaries may still be served from downloads/ at
-/media/ until R2 public URLs are filled in.
+DB path (default: data/comikflix.db). Page images currently render from Asura CDN URLs;
+R2 ingest + /media remain available for a later cutover.
 
 The "Add Comic" / "Update" buttons run ingest.py in the background.
 """
@@ -29,7 +29,6 @@ import r2
 HERE = Path(__file__).resolve().parent
 DOWNLOADS = HERE / "downloads"
 WEB = HERE / "web"
-IMG_EXTS = {".webp", ".png", ".jpg", ".jpeg", ".gif", ".avif"}
 INGEST = ingest.IngestManager()
 
 # PWA / static MIME fixes
@@ -61,29 +60,19 @@ def _page_src(
     series_slug: str,
     chapter_id: str,
     page_index: int,
-    public_url: str | None,
     cdn_url: str | None = None,
 ) -> str | None:
-    """Processed chapters use R2/public_url; everything else hits Asura CDN."""
-    if public_url:
-        return public_url
-    if cdn_url:
+    """Always render Asura CDN for now (ignore R2/local binaries)."""
+    if cdn_url and str(cdn_url).startswith("http"):
         return cdn_url
     return _synthesize_asura_cdn(series_slug, chapter_id, page_index)
 
 
 def _cover_urls(row) -> tuple[str | None, str | None]:
-    """Return (poster, first-page fallback candidate)."""
+    """Poster: remote http cover only; otherwise fall back to first page in scan_library."""
     cover_url = row["cover_url"]
-    if cover_url:
+    if cover_url and str(cover_url).startswith("http"):
         return cover_url, None
-    cover_key = row["cover_key"]
-    if cover_key:
-        # Prefer local leftover, else R2 proxy/public URL for the stored key.
-        local = DOWNLOADS / row["slug"] / cover_key
-        if local.is_file():
-            return f"/media/{row['slug']}/{cover_key}", None
-        return r2.public_url_for(cover_key), None
     return None, None
 
 
@@ -100,7 +89,7 @@ def scan_library() -> list[dict]:
             for pg in db.list_pages(slug, chapter_id):
                 keys = pg.keys()
                 cdn = pg["cdn_url"] if "cdn_url" in keys else None
-                src = _page_src(slug, chapter_id, pg["page_index"], pg["public_url"], cdn)
+                src = _page_src(slug, chapter_id, pg["page_index"], cdn)
                 if not src:
                     continue
                 aspect = pg["aspect_ratio"]
@@ -114,7 +103,7 @@ def scan_library() -> list[dict]:
             chapters_out.append({
                 "id": chapter_id,
                 "pages": pages_out,
-                "size": ch["size_bytes"] or 0,
+                "size": 0,  # binaries not served locally/R2 while on CDN-only mode
                 "source_url": ch["source_url"],
                 "date": ch["published_at"],
                 "status": ch["status"],
