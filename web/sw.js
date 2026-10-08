@@ -1,5 +1,6 @@
-/* Comicflix service worker — shell cache-first, library network-first, media on visit. */
-const VERSION = "comicflix-v6";
+/* Comicflix service worker — shell + library network-first (cache is the offline
+   fallback, so deploys show up on a normal reload), media cache-first on visit. */
+const VERSION = "comicflix-v25";
 const BASE = self.location.pathname.replace(/\/sw\.js$/, "");
 const p = (path) => `${BASE}${path}`;
 const SHELL = [
@@ -15,6 +16,10 @@ const SHELL = [
   p("/js/reader.js"),
   p("/js/ingest-ui.js"),
   p("/js/router.js"),
+  p("/js/screen.js"),
+  p("/js/remote.js"),
+  p("/js/rtc.js"),
+  p("/js/downloads.js"),
   p("/manifest.webmanifest"),
   p("/icons/icon-192.png"),
   p("/icons/icon-512.png"),
@@ -88,7 +93,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // App shell & static assets
+  // App shell & static assets — network-first so a deploy never needs a hard refresh
   if (
     path === p("/") ||
     under("/css/") ||
@@ -97,6 +102,6 @@ self.addEventListener("fetch", (event) => {
     path.endsWith(".webmanifest") ||
     path === p("/index.html")
   ) {
-    event.respondWith(cacheFirst(event.request, VERSION));
+    event.respondWith(networkFirst(event.request, VERSION));
   }
 });

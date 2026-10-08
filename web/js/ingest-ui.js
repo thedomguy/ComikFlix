@@ -172,6 +172,7 @@ export function renderTray() {
     ...[
       h("b", {}, "Downloads"),
       running ? h("span", { class: "run" }, `${running} running`) : null,
+      h("a", { class: "tray-all", href: "#/downloads", onclick: (e) => e.stopPropagation() }, "History"),
       h("span", { class: "chev" }, store.trayOpen ? "▾" : "▴"),
     ].filter(Boolean)
   );
@@ -255,7 +256,7 @@ export function openAdd() {
       h(
         "p",
         { class: "hint" },
-        "Reads the series info and downloads chapters from the start chapter onward (optionally up to a latest chapter). Chapters you already have are skipped."
+        "Reads the series info and indexes chapter page URLs from the start chapter onward (optionally up to a latest chapter). Images load from Asura CDN; chapters you already have are skipped."
       ),
       form,
       err

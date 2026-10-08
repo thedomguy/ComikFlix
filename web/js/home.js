@@ -2,14 +2,15 @@ import { $, h, bg, fmtSize } from "./dom.js";
 import { store } from "./store.js";
 
 export function totalPages(s) {
-  return s.chapters.reduce((n, c) => n + c.pages.length, 0);
+  if (s.page_total != null) return s.page_total;
+  return s.chapters.reduce((n, c) => n + (c.page_count || c.pages?.length || 0), 0);
 }
 
 export function resumeTarget(s) {
   const p = store.progress(s.slug);
   if (!p) return { chapter: s.chapters[0].id, label: "Read" };
   const idx = s.chapters.findIndex((c) => c.id === p.chapter);
-  if (idx >= 0 && p.frac > 0.97 && idx < s.chapters.length - 1) {
+  if (idx >= 0 && (p.read || []).includes(p.chapter) && idx < s.chapters.length - 1) {
     return { chapter: s.chapters[idx + 1].id, label: "Continue" };
   }
   return { chapter: p.chapter, label: "Continue" };

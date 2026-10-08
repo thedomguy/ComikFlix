@@ -11,6 +11,11 @@ export function withBase(path) {
   return `${BASE}${path}`;
 }
 
+/** Rewrite page src URLs so they stay under the subpath when proxied. */
+export function fixPages(pages) {
+  return (pages || []).map((p) => ({ ...p, src: withBase(p.src) }));
+}
+
 /** Rewrite library media URLs so they stay under the subpath. */
 export function fixLibrary(library) {
   return (library || []).map((s) => ({
@@ -19,7 +24,7 @@ export function fixLibrary(library) {
     backdrop: withBase(s.backdrop),
     chapters: (s.chapters || []).map((c) => ({
       ...c,
-      pages: (c.pages || []).map((p) => ({ ...p, src: withBase(p.src) })),
+      pages: c.pages ? fixPages(c.pages) : c.pages,
     })),
   }));
 }

@@ -59,7 +59,7 @@ function chapterRows(s, query = "") {
           "div",
           { class: "t" },
           `Chapter ${c.id}`,
-          h("small", {}, [`${c.pages.length} pages`, c.size ? fmtSize(c.size) : null, when].filter(Boolean).join(" · "))
+          h("small", {}, [`${c.page_count || c.pages?.length || 0} pages`, c.size ? fmtSize(c.size) : null, when].filter(Boolean).join(" · "))
         ),
         h("div", { class: `badge${done ? " done" : ""}` }, done ? "✓ Read" : cur ? `${Math.round(p.frac * 100)}%` : "")
       );

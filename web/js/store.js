@@ -9,12 +9,20 @@ const LEGACY = {
   dismissed: "comicflix-dismissed",
 };
 
+const defaultAutoScroll = () => ({
+  speed: 40, // px/sec
+  persist: "global", // global | series | chapter
+  bySeries: {},
+  byChapter: {},
+});
+
 const defaults = () => ({
   progress: {},
   readerWidth: 800,
   sortNewest: true,
   dismissedJobs: [],
   trayOpen: true,
+  autoScroll: defaultAutoScroll(),
 });
 
 let state = defaults();
@@ -49,12 +57,36 @@ async function putJson(url, body) {
   }
 }
 
+function normalizeAutoScroll(raw) {
+  const out = defaultAutoScroll();
+  if (!raw || typeof raw !== "object") return out;
+  const speed = +raw.speed;
+  if (Number.isFinite(speed)) out.speed = Math.min(400, Math.max(10, Math.round(speed)));
+  const persist = String(raw.persist || out.persist).toLowerCase();
+  if (persist === "global" || persist === "series" || persist === "chapter") out.persist = persist;
+  for (const [srcKey, destKey] of [
+    ["bySeries", "bySeries"],
+    ["byChapter", "byChapter"],
+  ]) {
+    const src = raw[srcKey];
+    if (!src || typeof src !== "object") continue;
+    const cleaned = {};
+    for (const [k, v] of Object.entries(src)) {
+      const n = +v;
+      if (Number.isFinite(n)) cleaned[String(k)] = Math.min(400, Math.max(10, Math.round(n)));
+    }
+    out[destKey] = cleaned;
+  }
+  return out;
+}
+
 function settingsPayload() {
   return {
     readerWidth: state.readerWidth,
     sortNewest: state.sortNewest,
     trayOpen: state.trayOpen,
     dismissedJobs: state.dismissedJobs,
+    autoScroll: state.autoScroll,
   };
 }
 
@@ -172,6 +204,7 @@ function applySettings(src) {
   if (src.sortNewest != null) state.sortNewest = !!src.sortNewest;
   if (src.trayOpen != null) state.trayOpen = !!src.trayOpen;
   if (Array.isArray(src.dismissedJobs)) state.dismissedJobs = src.dismissedJobs.slice(-200);
+  if (src.autoScroll != null) state.autoScroll = normalizeAutoScroll(src.autoScroll);
 }
 
 function applyProgressMap(map) {
@@ -295,5 +328,44 @@ export const store = {
   undismissJob(id) {
     state.dismissedJobs = state.dismissedJobs.filter((x) => x !== id);
     putSettings();
+  },
+  get autoScroll() {
+    return state.autoScroll;
+  },
+  /** Effective speed for a series/chapter, respecting persist scope. */
+  autoScrollSpeed(slug, chapterId) {
+    const a = state.autoScroll || defaultAutoScroll();
+    if (a.persist === "chapter") {
+      const key = `${slug}:${chapterId}`;
+      if (a.byChapter[key] != null) return a.byChapter[key];
+    }
+    if (a.persist === "series" || a.persist === "chapter") {
+      if (a.bySeries[slug] != null) return a.bySeries[slug];
+    }
+    return a.speed;
+  },
+  /**
+   * Update speed + persist preference.
+   * Writes into the active scope bucket so the next open of that chapter/series
+   * (or globally) picks it up.
+   */
+  setAutoScroll({ speed, persist, slug, chapterId } = {}) {
+    const a = normalizeAutoScroll(state.autoScroll);
+    if (persist === "global" || persist === "series" || persist === "chapter") {
+      a.persist = persist;
+    }
+    const n = speed != null ? Math.min(400, Math.max(10, Math.round(+speed))) : null;
+    if (n != null) {
+      if (a.persist === "chapter" && slug && chapterId != null) {
+        a.byChapter[`${slug}:${chapterId}`] = n;
+      } else if (a.persist === "series" && slug) {
+        a.bySeries[slug] = n;
+      } else {
+        a.speed = n;
+      }
+    }
+    state.autoScroll = a;
+    putSettings();
+    return a;
   },
 };

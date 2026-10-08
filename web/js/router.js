@@ -3,6 +3,8 @@ import { renderHome } from "./home.js";
 import { renderDetail, hideSeriesPage, isMobileSeries } from "./detail.js";
 import { closeReader, renderReader } from "./reader.js";
 import { getIngestJobs, startIngest, toast } from "./ingest-ui.js";
+import { closeRemote, renderRemote } from "./remote.js";
+import { closeDownloads, renderDownloads } from "./downloads.js";
 
 export function createRouter({ getLibrary, refreshLibrary }) {
   function bySlug(slug) {
@@ -18,7 +20,10 @@ export function createRouter({ getLibrary, refreshLibrary }) {
   });
 
   function route() {
+    document.documentElement.classList.remove("boot-read");
     closeReader();
+    closeRemote();
+    closeDownloads();
     const [, view, slug, chapter] = decodeURIComponent(location.hash).split("/");
     const s = slug && bySlug(slug);
     const modal = $("#modal");
@@ -36,6 +41,17 @@ export function createRouter({ getLibrary, refreshLibrary }) {
         : 0;
 
     modal.classList.add("hidden");
+    if (view === "downloads") {
+      hideSeriesPage();
+      renderDownloads($("#home"), getLibrary);
+      document.body.style.overflow = "";
+      return;
+    }
+    if (view === "remote") {
+      hideSeriesPage();
+      renderRemote(getLibrary, slug);
+      return;
+    }
     if (view === "series" && s) {
       if (pageMode) {
         renderDetail(s, keepScroll, detailOpts("page"));
@@ -47,7 +63,7 @@ export function createRouter({ getLibrary, refreshLibrary }) {
       }
     } else if (view === "read" && s) {
       hideSeriesPage();
-      renderReader(s, chapter);
+      void renderReader(s, chapter);
       return;
     } else {
       hideSeriesPage();
@@ -59,7 +75,7 @@ export function createRouter({ getLibrary, refreshLibrary }) {
   window.addEventListener("hashchange", () => {
     route();
     if (!location.hash.startsWith("#/series")) {
-      document.body.style.overflow = location.hash.startsWith("#/read") ? "hidden" : "";
+      document.body.style.overflow = /^#\/(read|remote)/.test(location.hash) ? "hidden" : "";
     } else if (isMobileSeries()) {
       document.body.style.overflow = "";
     }
