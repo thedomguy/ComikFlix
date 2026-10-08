@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Local comic reader: a Netflix-style library over everything in downloads/.
+"""Local comic reader: a Netflix-style library over SQLite metadata (+ /media proxy).
 
 Usage:
     ./server.py [-p PORT] [--host HOST] [--no-open]
 
-The "Add Comic" / "Update" buttons in the UI run ingest.py in the background: give it a series
-slug (or URL) and it scrapes the series info and downloads every available chapter.
+Library metadata lives in SQLite (see db.py). Optional env COMIKFLIX_DB overrides the
+DB path (default: data/comikflix.db). Binaries may still be served from downloads/ at
+/media/ until R2 public URLs are filled in.
 
-Library layout (as produced by download.py):
-    downloads/<series_slug>/chapter-<n>/001.webp ...  (+ manifest.json)
-    downloads/<series_slug>/series.json               (optional)
-
-series.json is written by ingest.py (and can be hand-edited): title, description, genres,
-status, author, artist, type, rating, alt_titles, cover (path relative to the series folder),
-chapter_dates {chapter: ISO date}, remote_chapters, locked_chapters.
+The "Add Comic" / "Update" buttons run ingest.py in the background.
 """
 import argparse
 import json
@@ -21,20 +16,21 @@ import mimetypes
 import re
 import threading
 import webbrowser
-from datetime import datetime, timezone
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import db
 import ingest
+import r2
 
 HERE = Path(__file__).resolve().parent
 DOWNLOADS = HERE / "downloads"
 WEB = HERE / "web"
 IMG_EXTS = {".webp", ".png", ".jpg", ".jpeg", ".gif", ".avif"}
-INGEST = ingest.IngestManager(DOWNLOADS)
+INGEST = ingest.IngestManager()
 
 # PWA / static MIME fixes
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -42,111 +38,144 @@ mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
 
-def natural_chapter_key(name: str) -> float:
-    m = re.search(r"chapter-(.+)$", name)
-    try:
-        return float(m.group(1)) if m else float("inf")
-    except ValueError:
-        return float("inf")
-
-
-def read_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
 def title_from_slug(slug: str) -> str:
     slug = re.sub(r"-[0-9a-f]{8}$", "", slug)
     return slug.replace("-", " ").title()
 
 
-def scan_chapter(series_dir: Path, chap_dir: Path, dates: dict) -> dict | None:
-    images = sorted(p for p in chap_dir.iterdir() if p.suffix.lower() in IMG_EXTS)
-    if not images:
-        return None
-    manifest = read_json(chap_dir / "manifest.json")
-    by_name = {}
-    for page in manifest.get("pages", []):
-        # download.py names files by page_index + 1, zero padded
-        by_name[page["page_index"] + 1] = page.get("aspect_ratio")
-    pages = []
-    size = 0
-    for i, img in enumerate(images, 1):
-        aspect = by_name.get(i)
-        try:
-            nbytes = img.stat().st_size
-        except OSError:
-            nbytes = 0
-        size += nbytes
-        pages.append({
-            "src": f"/media/{series_dir.name}/{chap_dir.name}/{img.name}",
-            "aspect": aspect.replace(" ", "") if aspect else None,
-        })
-    chapter_id = chap_dir.name.removeprefix("chapter-")
-    date = dates.get(chapter_id)
-    if not date:  # no published date known: fall back to when it was downloaded
-        try:
-            date = datetime.fromtimestamp((chap_dir / "manifest.json").stat().st_mtime, timezone.utc).isoformat()
-        except OSError:
-            date = None
-    return {
-        "id": chapter_id,
-        "pages": pages,
-        "size": size,
-        "source_url": manifest.get("source_url"),
-        "date": date,
-    }
+def _asura_cdn_slug(series_slug: str) -> str:
+    """Asura CDN folder is usually the slug without the trailing 8-hex id."""
+    return re.sub(r"-[0-9a-f]{8}$", "", series_slug)
+
+
+def _synthesize_asura_cdn(series_slug: str, chapter_id: str, page_index: int) -> str:
+    """Best-effort Asura image URL when manifests omitted the original src."""
+    page_num = int(page_index) + 1
+    return (
+        f"https://cdn.asurascans.com/asura-images/chapters/"
+        f"{_asura_cdn_slug(series_slug)}/{chapter_id}/{page_num:03d}.webp"
+    )
+
+
+def _page_src(
+    series_slug: str,
+    chapter_id: str,
+    page_index: int,
+    public_url: str | None,
+    cdn_url: str | None = None,
+) -> str | None:
+    """Processed chapters use R2/public_url; everything else hits Asura CDN."""
+    if public_url:
+        return public_url
+    if cdn_url:
+        return cdn_url
+    return _synthesize_asura_cdn(series_slug, chapter_id, page_index)
+
+
+def _cover_urls(row) -> tuple[str | None, str | None]:
+    """Return (poster, first-page fallback candidate)."""
+    cover_url = row["cover_url"]
+    if cover_url:
+        return cover_url, None
+    cover_key = row["cover_key"]
+    if cover_key:
+        # Prefer local leftover, else R2 proxy/public URL for the stored key.
+        local = DOWNLOADS / row["slug"] / cover_key
+        if local.is_file():
+            return f"/media/{row['slug']}/{cover_key}", None
+        return r2.public_url_for(cover_key), None
+    return None, None
 
 
 def scan_library() -> list[dict]:
+    """Build the library JSON from SQLite (not filesystem series.json)."""
+    db.init_schema()
     series_list = []
-    if not DOWNLOADS.is_dir():
-        return series_list
-    for series_dir in sorted(p for p in DOWNLOADS.iterdir() if p.is_dir()):
-        meta = read_json(series_dir / "series.json")
-        dates = meta.get("chapter_dates") or {}
-        chapters = []
-        for chap_dir in sorted((p for p in series_dir.iterdir() if p.is_dir() and p.name.startswith("chapter-")),
-                               key=lambda p: natural_chapter_key(p.name)):
-            chapter = scan_chapter(series_dir, chap_dir, dates)
-            if chapter:
-                chapters.append(chapter)
-        if not chapters:
+    for row in db.list_series_rows():
+        slug = row["slug"]
+        chapters_out = []
+        for ch in db.list_chapters(slug):
+            chapter_id = ch["chapter_id"]
+            pages_out = []
+            for pg in db.list_pages(slug, chapter_id):
+                keys = pg.keys()
+                cdn = pg["cdn_url"] if "cdn_url" in keys else None
+                src = _page_src(slug, chapter_id, pg["page_index"], pg["public_url"], cdn)
+                if not src:
+                    continue
+                aspect = pg["aspect_ratio"]
+                pages_out.append({
+                    "src": src,
+                    "aspect": aspect.replace(" ", "") if aspect else None,
+                })
+            # Skip chapters with no readable pages
+            if not pages_out:
+                continue
+            chapters_out.append({
+                "id": chapter_id,
+                "pages": pages_out,
+                "size": ch["size_bytes"] or 0,
+                "source_url": ch["source_url"],
+                "date": ch["published_at"],
+                "status": ch["status"],
+            })
+        if not chapters_out:
             continue
-        first = chapters[0]
-        # Title from series.json, else from a manifest alt ("Page 1 - Chapter 1 - <Title>"), else the slug.
-        title = meta.get("title")
-        if not title:
-            alt = next((pg.get("alt") for pg in read_json(series_dir / f"chapter-{first['id']}" / "manifest.json").get("pages", [])), "")
-            title = alt.rsplit(" - ", 1)[-1] if alt and " - " in alt else title_from_slug(series_dir.name)
+
+        first = chapters_out[0]
+        title = row["title"] or title_from_slug(slug)
+        poster, _ = _cover_urls(row)
         backdrop = first["pages"][0]["src"]
-        poster = f"/media/{series_dir.name}/{meta['cover']}" if meta.get("cover") else backdrop
+        if not poster:
+            poster = backdrop
+
+        def _j(text, default=None):
+            if not text:
+                return default
+            try:
+                return json.loads(text)
+            except (TypeError, ValueError):
+                return default
+
+        remote = _j(row["remote_chapters_json"])
+        release = _j(row["release_json"])
+        genres = _j(row["genres_json"], []) or []
+        alt_titles = _j(row["alt_titles_json"], []) or []
+
         series_list.append({
-            "slug": series_dir.name,
+            "slug": slug,
             "title": title,
-            "description": meta.get("description"),
-            "genres": meta.get("genres", []),
-            "status": meta.get("status"),
-            "author": meta.get("author"),
-            "artist": meta.get("artist"),
-            "type": meta.get("type"),
-            "rating": meta.get("rating"),
-            "alt_titles": meta.get("alt_titles", []),
-            "next_release": meta.get("release"),
-            "remote_total": len(meta["remote_chapters"]) if meta.get("remote_chapters") else None,
-            "source_url": meta.get("source_url") or first.get("source_url"),
+            "description": row["description"],
+            "genres": genres,
+            "status": row["status"],
+            "author": row["author"],
+            "artist": row["artist"],
+            "type": row["type"],
+            "rating": row["rating"],
+            "alt_titles": alt_titles,
+            "next_release": release,
+            "release_date": row["release_date"],
+            "remote_total": len(remote) if isinstance(remote, list) else None,
+            "source_url": row["source_url"] or first.get("source_url"),
             "poster": poster,
             "backdrop": backdrop,
-            "size": sum(c["size"] for c in chapters),
-            "chapters": chapters,
+            "size": sum(c["size"] for c in chapters_out),
+            "chapters": chapters_out,
         })
     return series_list
 
 
+def _read_json_body(handler: SimpleHTTPRequestHandler, max_bytes: int = 65536) -> tuple[dict | None, str | None]:
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+        raw = handler.rfile.read(min(length, max_bytes)) or b"{}"
+        return json.loads(raw), None
+    except ValueError:
+        return None, "invalid JSON"
+
+
 class Handler(SimpleHTTPRequestHandler):
-    """Serves web/ at /, downloads/ at /media/, and the library index at /api/library."""
+    """Serves web/ at /, downloads/ at /media/, and JSON APIs under /api/."""
 
     def translate_path(self, path: str) -> str:
         path = unquote(path.split("?", 1)[0].split("#", 1)[0])
@@ -173,34 +202,100 @@ class Handler(SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return origin is None or urlparse(origin).netloc == self.headers.get("Host")
 
+    def _require_json_mutation(self) -> dict | None:
+        if not self.same_origin() or "application/json" not in (self.headers.get("Content-Type") or ""):
+            self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+            return None
+        data, err = _read_json_body(self)
+        if err:
+            self.send_json({"error": err}, HTTPStatus.BAD_REQUEST)
+            return None
+        return data
+
+    def _send_r2_object(self, key: str) -> None:
+        """Proxy a private R2 object so the browser never needs the API token."""
+        if not key or ".." in key.split("/"):
+            return self.send_error(HTTPStatus.BAD_REQUEST, "bad key")
+        try:
+            client = r2.get_client()
+            data = client.read(key)
+        except r2.R2ConfigError as e:
+            return self.send_json({"error": str(e)}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except FileNotFoundError:
+            return self.send_error(HTTPStatus.NOT_FOUND, "not found")
+        except Exception as e:
+            return self.send_json({"error": str(e)}, HTTPStatus.BAD_GATEWAY)
+        ctype = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/api/library":
             return self.send_json(scan_library())
+        if path == "/api/settings":
+            return self.send_json(db.get_settings())
+        if path == "/api/progress":
+            return self.send_json(db.get_progress())
         if path == "/api/ingest":
             return self.send_json(INGEST.list())
         if path.startswith("/api/ingest/"):
             job = INGEST.snapshot(path.rsplit("/", 1)[-1])
             return self.send_json(job or {"error": "unknown job"}, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND)
+        if path.startswith(r2.PROXY_PREFIX):
+            key = unquote(path[len(r2.PROXY_PREFIX):])
+            return self._send_r2_object(key)
         super().do_GET()
+
+    def do_PUT(self):
+        path = self.path.split("?", 1)[0]
+        data = self._require_json_mutation()
+        if data is None:
+            return
+        if path == "/api/settings":
+            return self.send_json(db.put_settings(data))
+        if path == "/api/progress":
+            return self.send_json(db.put_progress_all(data))
+        parts = path.split("/")
+        if len(parts) == 4 and parts[:3] == ["", "api", "progress"]:
+            slug = unquote(parts[3])
+            return self.send_json(db.put_progress_slug(slug, data))
+        self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def do_PATCH(self):
+        path = self.path.split("?", 1)[0]
+        data = self._require_json_mutation()
+        if data is None:
+            return
+        parts = path.split("/")
+        if len(parts) == 4 and parts[:3] == ["", "api", "series"]:
+            slug = unquote(parts[3])
+            updated = db.patch_series(slug, data)
+            if not updated:
+                return self.send_json({"error": "unknown series"}, HTTPStatus.NOT_FOUND)
+            return self.send_json(updated)
+        self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if not self.same_origin() or "application/json" not in (self.headers.get("Content-Type") or ""):
-            return self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            data = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
-        except ValueError:
-            return self.send_json({"error": "invalid JSON"}, HTTPStatus.BAD_REQUEST)
+        data = self._require_json_mutation()
+        if data is None:
+            return
         if path == "/api/ingest":
             latest = data.get("latest")
             try:
-                latest = int(latest) if latest not in (None, "") else None  # optional upper limit
+                latest = int(latest) if latest not in (None, "") else None
             except (TypeError, ValueError):
                 return self.send_json({"error": "Latest chapter must be a whole number"}, HTTPStatus.BAD_REQUEST)
+            start_chapter = data.get("start_chapter")
+            if start_chapter in (None, ""):
+                return self.send_json({"error": "start_chapter is required"}, HTTPStatus.BAD_REQUEST)
             try:
-                job = INGEST.start(str(data.get("series", "")), latest)
+                job = INGEST.start(str(data.get("series", "")), latest=latest, start_chapter=start_chapter)
             except ValueError as e:
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
             return self.send_json(job, HTTPStatus.ACCEPTED)
@@ -220,19 +315,20 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         path = self.path.split("?", 1)[0]
-        if path.startswith("/media/"):
-            self.send_header("Cache-Control", "public, max-age=86400")
+        if path.startswith("/media/") or path.startswith(r2.PROXY_PREFIX):
+            # /api/r2/ sets Cache-Control in _send_r2_object; /media/ uses day cache.
+            if path.startswith("/media/"):
+                self.send_header("Cache-Control", "public, max-age=86400")
         elif path.endswith((".js", ".css", ".webmanifest", "/sw.js")) or path == "/sw.js":
             self.send_header("Cache-Control", "no-cache")
         else:
             self.send_header("Cache-Control", "no-cache")
-        # Service worker needs a valid scope
-        if path.endswith("/sw.js") or path == "/sw.js":
-            self.send_header("Service-Worker-Allowed", "/")
+        # Omit Service-Worker-Allowed: / so a subpath deploy (e.g. /readers/)
+        # cannot claim the whole host via the service worker.
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        if not self.path.startswith(("/media/", "/api/ingest")):
+        if not self.path.startswith(("/media/", "/api/ingest", r2.PROXY_PREFIX)):
             super().log_message(fmt, *args)
 
 
@@ -243,9 +339,10 @@ def main() -> None:
     ap.add_argument("--no-open", action="store_true", help="don't open a browser tab")
     args = ap.parse_args()
 
+    db.init_schema()
     server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=str(HERE)))
     url = f"http://{args.host}:{args.port}/"
-    print(f"Serving {DOWNLOADS} at {url}  (Ctrl+C to stop)")
+    print(f"Serving library from {db.db_path()}  media={DOWNLOADS}  at {url}  (Ctrl+C to stop)")
     if not args.no_open:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:

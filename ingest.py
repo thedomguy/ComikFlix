@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Centralised ingestion: series slug -> series info + every available chapter.
+"""Centralised ingestion: series slug -> metadata + chapters uploaded to Cloudflare R2.
 
 Usage:
-    ./ingest.py SERIES_SLUG_OR_URL [--latest N] [-o OUT_DIR] [-w WORKERS]
+    ./ingest.py SERIES_SLUG_OR_URL --start N [--latest M] [-w WORKERS]
 
-1. Fetches https://asurascans.com/comics/<slug> and extracts the series info (title,
-   synopsis, genres, author, artist, status, rating, cover) and the full chapter list
-   with publish dates. Everything is saved to downloads/<slug>/series.json.
-2. Downloads every chapter that isn't already complete. Chapters that are locked
-   (premium / early access) are listed but skipped. --latest N limits it to chapters <= N.
+1. Fetches https://asurascans.com/comics/<slug> and extracts series info + chapter list.
+   Metadata is written to SQLite (via db_ingest / sibling db.py); cover goes to R2.
+2. For each unlocked chapter from --start through --latest (or remote latest): download
+   pages to an ephemeral temp dir, optionally optimize to WebP, upload to R2, write
+   chapter/pages rows, then delete the temp files.
 
-Re-running is the "update" operation: finished chapters are skipped, new ones are fetched.
-Also imported by server.py, which runs jobs in the background (see IngestManager).
+Re-running skips chapters already marked ready in the DB. Jobs stay in-memory
+(IngestManager); they are not persisted.
 """
 import argparse
 import copy
@@ -19,6 +19,8 @@ import html as htmllib
 import json
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 import urllib.error
@@ -29,11 +31,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import asura_chapter_pages as asura
+import db_ingest
 import download
 import optimize_images
+import r2
 
 HERE = Path(__file__).resolve().parent
-DOWNLOADS = HERE / "downloads"
+DOWNLOADS = HERE / "downloads"  # legacy; no longer the library of record
 BASE = "https://asurascans.com"
 SERIES_URL = BASE + "/comics/{slug}"
 CHAPTER_URL = BASE + "/comics/{slug}/chapter/{chapter}"
@@ -187,106 +191,175 @@ def estimate_release(chapters: list[dict], status: str | None) -> dict | None:
     }
 
 
-def save_series_info(info: dict, out_root: Path, overwrite: bool = False) -> None:
-    """Merge scraped info into downloads/<slug>/series.json.
-
-    Descriptive fields (title, description, genres, ...) are only filled in when missing so
-    hand edits survive; volatile fields (status, rating, chapter dates) always refresh.
-    overwrite=True replaces the descriptive fields and re-downloads the cover too.
-    """
-    series_dir = out_root / info["slug"]
-    series_dir.mkdir(parents=True, exist_ok=True)
-    path = series_dir / "series.json"
-    try:
-        meta = json.loads(path.read_text())
-    except (OSError, ValueError):
-        meta = {}
-
-    cover = info.get("cover_url")
-    if cover and (overwrite or not (meta.get("cover") and (series_dir / meta["cover"]).exists())):
-        dest = series_dir / f"cover{Path(urlparse(cover).path).suffix or '.webp'}"
-        if overwrite:
-            dest.unlink(missing_ok=True)  # download() skips files that already exist
+def _upload_cover(client: r2.R2Client, slug: str, cover_url: str) -> tuple[str, str] | None:
+    """Download cover to a temp file, upload to R2, return (key, public_url)."""
+    ext = Path(urlparse(cover_url).path).suffix or ".webp"
+    key = r2.cover_key(slug, ext)
+    with tempfile.TemporaryDirectory(prefix="comikflix-cover-") as tmp:
+        dest = Path(tmp) / f"cover{ext}"
+        download.download(cover_url, dest, BASE + "/", 3)
+        # Prefer webp when optimize succeeds; otherwise upload original bytes/ext.
         try:
-            download.download(cover, dest, BASE + "/", 3)
-            meta["cover"] = dest.name
+            summary = optimize_images.optimize_chapter(Path(tmp), workers=1)
+            if summary["failed"] == 0:
+                webps = sorted(Path(tmp).glob("cover*.webp"))
+                if webps:
+                    dest = webps[0]
+                    key = r2.cover_key(slug, ".webp")
         except Exception:
-            pass  # a missing cover is cosmetic
+            pass
+        ctype = "image/webp" if dest.suffix.lower() == ".webp" else None
+        url = client.upload_file(dest, key, content_type=ctype)
+        return key, url
 
-    for key in ("title", "description", "genres", "author", "artist", "type", "alt_titles", "source_url"):
-        if (overwrite or not meta.get(key)) and info.get(key):
-            meta[key] = info[key]
-    for key in ("status", "rating", "bookmarks"):
-        if info.get(key) is not None:
-            meta[key] = info[key]
-    meta["chapter_dates"] = {c["number"]: c["published_at"] for c in info["chapters"] if c.get("published_at")}
-    meta["remote_chapters"] = [c["number"] for c in info["chapters"] if not c["locked"]]
-    meta["locked_chapters"] = [c["number"] for c in info["chapters"] if c["locked"]]
-    release = estimate_release(info["chapters"], meta.get("status"))
-    if release:
-        meta["release"] = release
-    else:
-        meta.pop("release", None)  # finished, on hiatus, or not enough history
-    meta["info_updated_at"] = datetime.now(timezone.utc).isoformat()
-    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+
+def save_series_info(info: dict, overwrite: bool = False, client: r2.R2Client | None = None) -> None:
+    """Persist scraped series metadata to SQLite and upload cover to R2.
+
+    Descriptive fields only fill when missing unless overwrite=True; volatile fields
+    (status, rating, chapter lists, release forecast) always refresh.
+    """
+    client = client or r2.get_client()
+    cover_key = cover_pub = None
+    cover = info.get("cover_url")
+    if cover:
+        try:
+            uploaded = _upload_cover(client, info["slug"], cover)
+            if uploaded:
+                cover_key, cover_pub = uploaded
+        except Exception:
+            pass  # missing cover is cosmetic; series row still lands
+
+    release = estimate_release(info["chapters"], info.get("status"))
+    db_ingest.upsert_series(
+        info,
+        cover_key=cover_key,
+        cover_url=cover_pub,
+        release=release,
+        overwrite=overwrite,
+    )
 
 
 # --------------------------------------------------------------------------- chapters
 
-def chapter_complete(slug: str, chapter: str, out_root: Path) -> bool:
-    """True when manifest exists and enough non-empty page images are on disk."""
-    chap_dir = out_root / slug / f"chapter-{chapter}"
-    try:
-        manifest = json.loads((chap_dir / "manifest.json").read_text())
-        expected = int(manifest.get("page_count") or len(manifest.get("pages") or []))
-    except (OSError, ValueError, TypeError):
-        return False
-    if expected <= 0:
-        return False
-    try:
-        present = sum(
-            1
-            for p in chap_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in IMG_EXTS and p.stat().st_size > 0
-        )
-    except OSError:
-        return False
-    return present >= expected
+def chapter_complete(slug: str, chapter: str) -> bool:
+    """True when SQLite has this chapter with status='ready' (uploaded to R2)."""
+    return db_ingest.chapter_is_ready(slug, chapter)
 
 
-def ingest_chapter(slug: str, chapter: str, out_root: Path, workers: int, progress=None, retries: int = 3) -> int:
-    """Fetch one chapter; returns its page count. Raises on failure.
+def _page_files(chap_dir: Path) -> list[Path]:
+    files = [
+        p for p in chap_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in IMG_EXTS and p.stat().st_size > 0
+        and not p.name.startswith(".")
+    ]
+    files.sort(key=lambda p: p.name)
+    return files
 
-    progress(done, total) is called as images finish.
+
+def ingest_chapter(
+    slug: str,
+    chapter: str,
+    workers: int,
+    client: r2.R2Client,
+    progress=None,
+    retries: int = 3,
+    published_at: str | None = None,
+) -> int:
+    """Fetch one chapter into a temp dir, optimize, upload to R2, write DB rows.
+
+    Returns page count. Raises on failure. Temp files are always deleted.
     """
     url = CHAPTER_URL.format(slug=slug, chapter=chapter)
-    pages = asura.extract_pages(asura.fetch_html(url))
-    if not pages:
+    pages_meta = asura.extract_pages(asura.fetch_html(url))
+    if not pages_meta:
         raise RuntimeError("no reader pages found on chapter page")
-    manifest = asura.build_result(url, pages)
+    manifest = asura.build_result(url, pages_meta)
     manifest["series_slug"], manifest["chapter"] = slug, str(chapter)
 
-    jobs = download.build_jobs(manifest, out_root)
-    chap_dir = jobs[0][1].parent
-    chap_dir.mkdir(parents=True, exist_ok=True)
-    total, done, failed = len(jobs), 0, []
-    if progress:
-        progress(0, total)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(download.download, u, d, url, retries): u for u, d in jobs}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except Exception as e:
-                failed.append(f"{futures[fut]}: {e}")
-            done += 1
-            if progress:
-                progress(done, total)
-    if failed:
-        raise RuntimeError(f"{len(failed)}/{total} images failed ({failed[0]})")
-    # Written last, so a chapter with a manifest.json is known to be complete.
-    (chap_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
-    return total
+    aspect_by_index = {
+        int(p["page_index"]): (p.get("aspect_ratio") or "").replace(" ", "") or None
+        for p in manifest.get("pages") or []
+    }
+    alt_by_index = {
+        int(p["page_index"]): p.get("alt")
+        for p in manifest.get("pages") or []
+    }
+    cdn_by_index = {
+        int(p["page_index"]): p.get("src")
+        for p in manifest.get("pages") or []
+        if p.get("src")
+    }
+
+    tmp_root = Path(tempfile.mkdtemp(prefix=f"comikflix-{slug}-ch{chapter}-"))
+    try:
+        jobs = download.build_jobs(manifest, tmp_root)
+        chap_dir = jobs[0][1].parent
+        chap_dir.mkdir(parents=True, exist_ok=True)
+        total, done, failed = len(jobs), 0, []
+        if progress:
+            progress(0, total)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(download.download, u, d, url, retries): u for u, d in jobs}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    failed.append(f"{futures[fut]}: {e}")
+                done += 1
+                if progress:
+                    progress(done, total)
+        if failed:
+            raise RuntimeError(f"{len(failed)}/{total} images failed ({failed[0]})")
+
+        try:
+            optimize_images.optimize_chapter(chap_dir, workers=OPT_WORKERS)
+        except Exception:
+            pass  # upload originals if optimize unavailable
+
+        page_files = _page_files(chap_dir)
+        if not page_files:
+            raise RuntimeError("no page images after download")
+
+        uploaded_pages = []
+        size_bytes = 0
+        for i, path in enumerate(page_files):
+            page_num = i + 1  # 1-based for R2 key
+            page_index = page_num - 1  # 0-based in DB
+            # Prefer numeric stem if download used padded names
+            stem = path.stem
+            if stem.isdigit():
+                page_num = int(stem)
+                page_index = page_num - 1
+            key = r2.page_key(slug, str(chapter), page_num)
+            # Normalize extension to .webp key even if source stayed png/jpg
+            if path.suffix.lower() != ".webp":
+                key = r2.page_key(slug, str(chapter), page_num)
+            pub = client.upload_file(
+                path, key,
+                content_type="image/webp" if path.suffix.lower() == ".webp" else None,
+            )
+            size_bytes += path.stat().st_size
+            uploaded_pages.append({
+                "page_index": page_index,
+                "r2_key": key,
+                "public_url": pub,
+                "cdn_url": cdn_by_index.get(page_index),
+                "aspect_ratio": aspect_by_index.get(page_index),
+                "alt": alt_by_index.get(page_index),
+            })
+
+        db_ingest.mark_chapter_ready(
+            slug, str(chapter),
+            page_count=len(uploaded_pages),
+            size_bytes=size_bytes,
+            source_url=url,
+            published_at=published_at,
+            pages=uploaded_pages,
+        )
+        return len(uploaded_pages)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def _error_text(e: Exception) -> str:
@@ -302,26 +375,49 @@ class IngestManager:
 
     Job states: running, done, partial (some chapters failed), cancelled, error (couldn't
     even read the series). retry() re-runs failed/unprocessed chapters of a finished job.
+
+    Chapters are downloaded to ephemeral temp dirs, uploaded to R2, then deleted.
+    Completion is tracked via SQLite chapter status='ready' (not manifest.json).
     """
 
-    def __init__(self, out_root: Path = DOWNLOADS, workers: int = 8):
-        self.out_root, self.workers = out_root, workers
+    def __init__(self, workers: int = 8):
+        self.workers = workers
         self._jobs: dict[str, dict] = {}
         self._cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     # -- public API
 
-    def start(self, slug: str, latest: int | None = None) -> dict:
+    def start(self, slug: str, start_chapter: int | float | str, latest: int | None = None) -> dict:
         slug = parse_slug(slug)
+        try:
+            start = float(start_chapter)
+        except (TypeError, ValueError) as e:
+            raise ValueError("start_chapter must be a number") from e
+        if start < 0 or start > MAX_CHAPTERS:
+            raise ValueError(f"start_chapter must be between 0 and {MAX_CHAPTERS}")
         if latest is not None and not 1 <= latest <= MAX_CHAPTERS:
             raise ValueError(f"Latest chapter must be between 1 and {MAX_CHAPTERS}")
+        if latest is not None and float(latest) < start:
+            raise ValueError("latest must be >= start_chapter")
         with self._lock:
             if any(j["slug"] == slug and j["state"] == "running" for j in self._jobs.values()):
                 raise ValueError("An ingestion for this series is already running")
-            job = {"id": uuid.uuid4().hex[:8], "slug": slug, "title": None, "latest": latest, "state": "running",
-                   "stage": "Fetching series info", "started": time.time(), "finished": None, "error": None,
-                   "chapters": {}, "log": []}
+            job = {
+                "id": uuid.uuid4().hex[:8],
+                "slug": slug,
+                "title": None,
+                "start_chapter": _label(start),
+                "start": start,
+                "latest": latest,
+                "state": "running",
+                "stage": "Fetching series info",
+                "started": time.time(),
+                "finished": None,
+                "error": None,
+                "chapters": {},
+                "log": [],
+            }
             self._jobs[job["id"]] = job
             self._cancels[job["id"]] = threading.Event()
             for old in sorted(self._jobs.values(), key=lambda j: j["started"])[:-MAX_JOBS]:
@@ -396,12 +492,25 @@ class IngestManager:
         with self._lock:
             job["chapters"][number].update(fields)
 
+    def _client_or_fail(self, job: dict) -> r2.R2Client | None:
+        try:
+            return r2.get_client()
+        except r2.R2ConfigError as e:
+            self._log(job, "error", str(e))
+            with self._lock:
+                job.update(state="error", error=str(e), finished=time.time(), stage="Failed")
+            return None
+
     def _run(self, job: dict) -> None:
         slug = job["slug"]
+        client = self._client_or_fail(job)
+        if client is None:
+            return
+
         self._log(job, "info", f"Fetching series info for {slug}")
         try:
             info = fetch_series_info(slug)
-            save_series_info(info, self.out_root)
+            save_series_info(info, client=client)
         except Exception as e:
             self._log(job, "error", f"Could not read series: {_error_text(e)}")
             with self._lock:
@@ -409,42 +518,38 @@ class IngestManager:
             return
 
         chapters = info["chapters"]
+        start = float(job["start"])
+        chapters = [c for c in chapters if float(c["number"]) >= start]
         if job["latest"] is not None:
             chapters = [c for c in chapters if float(c["number"]) <= job["latest"]]
         locked = [c for c in chapters if c["locked"]]
         with self._lock:
             job["title"] = info["title"]
-            job["chapters"] = {c["number"]: {"state": "locked" if c["locked"] else "queued", "done": 0, "total": 0,
-                                             "pages": None, "error": None, "started": None, "finished": None,
-                                             "date": c.get("published_at")} for c in chapters}
-        self._log(job, "info", f"{info['title']}: {len(chapters)} chapters"
+            job["chapters"] = {
+                c["number"]: {
+                    "state": "locked" if c["locked"] else "queued",
+                    "done": 0, "total": 0, "pages": None, "error": None,
+                    "started": None, "finished": None, "date": c.get("published_at"),
+                }
+                for c in chapters
+            }
+        # Keep boto client off the job dict (snapshot copies); side map by job id
+        self._r2_for_job = getattr(self, "_r2_for_job", {})
+        self._r2_for_job[job["id"]] = client
+
+        self._log(job, "info", f"{info['title']}: {len(chapters)} chapters from {job['start_chapter']}"
+                  + (f" to {job['latest']}" if job["latest"] is not None else " to latest")
                   + (f", {len(locked)} locked (premium/early access, skipped)" if locked else ""))
         self._process(job, [c["number"] for c in chapters if not c["locked"]])
 
-    def _optimize_chapter(self, job: dict, number: str) -> None:
-        chap_dir = self.out_root / job["slug"] / f"chapter-{number}"
-        try:
-            summary = optimize_images.optimize_chapter(chap_dir, workers=OPT_WORKERS)
-        except Exception as e:
-            self._log(job, "error", f"Chapter {number}: optimize failed ({_error_text(e)}) — keeping downloads")
-            return
-        if summary["failed"]:
-            self._log(
-                job,
-                "error",
-                f"Chapter {number}: optimize partial ({summary['failed']} failed, "
-                f"{summary['optimized']} optimized)",
-            )
-            return
-        saved = summary["original_bytes"] - summary["optimized_bytes"]
-        self._log(
-            job,
-            "info",
-            f"Chapter {number}: optimized {summary['optimized']}/{summary['images']} images "
-            f"({optimize_images.fmt_bytes(summary['original_bytes'])} → "
-            f"{optimize_images.fmt_bytes(summary['optimized_bytes'])}, "
-            f"saved {optimize_images.fmt_bytes(max(0, saved))})",
-        )
+    def _r2(self, job: dict) -> r2.R2Client:
+        clients = getattr(self, "_r2_for_job", {})
+        client = clients.get(job["id"])
+        if client is None:
+            client = r2.get_client()
+            clients[job["id"]] = client
+            self._r2_for_job = clients
+        return client
 
     def _one_chapter(self, job: dict, number: str, cancel: threading.Event) -> None:
         slug = job["slug"]
@@ -452,39 +557,55 @@ class IngestManager:
             return
         with self._lock:
             job["stage"] = f"Chapter {number}"
-        if chapter_complete(slug, number, self.out_root):
+        if chapter_complete(slug, number):
             self._set(job, number, state="cached")
-            self._log(job, "info", f"Chapter {number}: already downloaded")
+            self._log(job, "info", f"Chapter {number}: already on R2 (ready)")
             return
 
         t0 = time.time()
+        published = None
+        with self._lock:
+            published = (job["chapters"].get(number) or {}).get("date")
         self._set(job, number, state="running", started=t0, finished=None, error=None, done=0, total=0)
-        self._log(job, "info", f"Chapter {number}: fetching")
+        self._log(job, "info", f"Chapter {number}: fetching → R2")
 
         def progress(done, total, n=number):
             self._set(job, n, done=done, total=total)
 
         try:
-            pages = ingest_chapter(slug, number, self.out_root, self.workers, progress)
+            pages = ingest_chapter(
+                slug, number, self.workers, self._r2(job), progress, published_at=published,
+            )
             self._set(job, number, state="done", pages=pages, done=pages, total=pages, finished=time.time())
-            self._log(job, "info", f"Chapter {number}: {pages} pages in {time.time() - t0:.1f}s")
-            self._optimize_chapter(job, number)
+            self._log(job, "info", f"Chapter {number}: {pages} pages → R2 in {time.time() - t0:.1f}s")
         except Exception as e:
+            try:
+                db_ingest.mark_chapter_failed(slug, number, published_at=published)
+            except Exception:
+                pass
             self._set(job, number, state="failed", error=_error_text(e), finished=time.time())
             self._log(job, "error", f"Chapter {number}: {_error_text(e)}")
-        # Pace origin after a real network attempt (not after cache hits).
         if not cancel.is_set():
             time.sleep(FETCH_DELAY)
 
     def _process(self, job: dict, numbers: list[str]) -> None:
+        # Ensure R2 client is available (retry path may skip _run)
+        try:
+            self._r2(job)
+        except r2.R2ConfigError as e:
+            self._log(job, "error", str(e))
+            with self._lock:
+                job.update(state="error", error=str(e), finished=time.time(), stage="Failed")
+            return
+
         cancel = self._cancels[job["id"]]
         pending = []
         for number in numbers:
             if cancel.is_set():
                 break
-            if chapter_complete(job["slug"], number, self.out_root):
+            if chapter_complete(job["slug"], number):
                 self._set(job, number, state="cached")
-                self._log(job, "info", f"Chapter {number}: already downloaded")
+                self._log(job, "info", f"Chapter {number}: already on R2 (ready)")
             else:
                 pending.append(number)
 
@@ -492,7 +613,7 @@ class IngestManager:
             with ThreadPoolExecutor(max_workers=CHAPTER_CONCURRENCY) as pool:
                 futs = [pool.submit(self._one_chapter, job, n, cancel) for n in pending]
                 for fut in as_completed(futs):
-                    fut.result()  # surface unexpected errors to _spawn
+                    fut.result()
 
         with self._lock:
             states = [c["state"] for c in job["chapters"].values()]
@@ -502,23 +623,27 @@ class IngestManager:
                 state = "partial"
             else:
                 state = "done"
-            job.update(state=state, finished=time.time(), stage={"done": "Complete", "partial": "Finished with failures",
-                                                                  "cancelled": "Cancelled"}[state])
+            job.update(state=state, finished=time.time(), stage={
+                "done": "Complete", "partial": "Finished with failures", "cancelled": "Cancelled",
+            }[state])
+        # Drop client reference
+        getattr(self, "_r2_for_job", {}).pop(job["id"], None)
         ok = states.count("done")
-        self._log(job, "info", f"Finished: {ok} downloaded, {states.count('cached')} already had, "
+        self._log(job, "info", f"Finished: {ok} uploaded, {states.count('cached')} already ready, "
                   f"{states.count('failed')} failed" + (", cancelled" if cancel.is_set() else ""))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("series", help="series slug or asurascans.com comic URL")
+    ap.add_argument("--start", "--start-chapter", dest="start_chapter", required=True,
+                    help="first chapter to ingest (inclusive)")
     ap.add_argument("--latest", type=int, help="only chapters up to and including this number")
-    ap.add_argument("-o", "--out", type=Path, default=DOWNLOADS)
     ap.add_argument("-w", "--workers", type=int, default=8)
     args = ap.parse_args()
 
-    mgr = IngestManager(args.out, args.workers)
-    job = mgr.start(args.series, args.latest)
+    mgr = IngestManager(args.workers)
+    job = mgr.start(args.series, start_chapter=args.start_chapter, latest=args.latest)
     seen = 0
     while True:
         snap = mgr.snapshot(job["id"])
