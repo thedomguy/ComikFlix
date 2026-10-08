@@ -1,0 +1,7 @@
+/* Downloads history (#/downloads); base .dl-* styles live in app.css. */
+@media (max-width: 700px) {
+  .dl-page { padding-left: 16px; padding-right: 16px; }
+  .dl-head h1 { font-size: 24px; }
+  .dl-top { flex-wrap: wrap; }
+  .dl-title { white-space: normal; }
+}

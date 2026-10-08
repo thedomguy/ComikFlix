@@ -1,0 +1,126 @@
+/* App shell: nav layout for the React app (page styles live in styles/<page>.css). */
+#root { min-height: 100dvh; }
+.nav .nav-links { display: flex; gap: 18px; margin-left: 8px; }
+.nav .navtext { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 15px; }
+.nav .navtext:hover, .nav .navtext.on { color: var(--fg); }
+.nav .nav-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.nav .iconbtn.on { color: var(--accent); }
+.nav .iconbtn { background: transparent; border: 0; cursor: pointer; }
+.nav.solid { background: var(--bg); }
+.nav-mobile-only { display: none; }
+@media (max-width: 700px) {
+  .nav .nav-links { display: none; }
+  .nav-mobile-only { display: contents; }
+  .nav .nav-right { gap: 2px; }
+  .nav .iconbtn { width: 36px; height: 36px; }
+  .nav .addbtn { padding: 7px 10px; font-size: 14px; }
+}
+.card-badge {
+  position: absolute; top: 6px; right: 6px; z-index: 1; font-size: 11px; font-weight: 700;
+  padding: 2px 7px; border-radius: 10px; background: rgba(20,20,20,.85); color: var(--fg);
+}
+.card-badge.new { background: var(--accent); color: #fff; }
+
+/* crash screen (ErrorBoundary) */
+.crash {
+  position: fixed; inset: 0; z-index: 95; overflow-y: auto; background: var(--bg); color: var(--fg);
+  padding: calc(40px + var(--safe-top)) 20px calc(24px + var(--safe-bottom));
+  display: flex; flex-direction: column; gap: 12px; max-width: 720px; margin: 0 auto;
+}
+.crash h2 { margin: 0; }
+.crash p { margin: 0; color: var(--muted); }
+.crash pre {
+  margin: 0; padding: 12px; border-radius: 8px; background: #0e0e0e; color: #ff9b9b; font-size: 12px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.crash-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.crash-actions .btn { text-decoration: none; }
+
+/* ===================== native-style mobile shell (≤700px) ===================== */
+.tabbar, .mtitle, .sheet-backdrop { display: none; }
+.screen { position: relative; }
+
+@media (max-width: 700px) {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { overscroll-behavior-y: none; }
+  body.has-tabs { padding-bottom: calc(58px + var(--safe-bottom)); }
+  button, a, .card { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+  /* bottom tab bar */
+  .tabbar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    padding: 4px max(6px, var(--safe-left)) calc(4px + var(--safe-bottom)) max(6px, var(--safe-right));
+    background: rgba(18,18,18,.92); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .tab {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    min-height: 50px; color: #8a8a8a; text-decoration: none; background: transparent; border: 0;
+    font-size: 10.5px; font-weight: 600; letter-spacing: .01em; transition: color .15s, transform .1s;
+  }
+  .tab svg { width: 25px; height: 25px; }
+  .tab.on { color: var(--fg); }
+  .tab.on svg { color: var(--accent); }
+  .tab:active { transform: scale(.92); }
+
+  /* status-bar strip + compact title that fades in on scroll */
+  .mtitle {
+    display: flex; align-items: flex-end; justify-content: center; position: fixed; inset: 0 0 auto 0; z-index: 25;
+    height: calc(44px + var(--safe-top)); padding-bottom: 11px; pointer-events: none;
+    background: linear-gradient(var(--bg) 0, var(--bg) var(--safe-top), transparent var(--safe-top));
+  }
+  .mtitle span { font-weight: 700; font-size: 16px; opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .2s; }
+  .mtitle.shown { background: rgba(18,18,18,.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid rgba(255,255,255,.06); }
+  .mtitle.shown span { opacity: 1; transform: none; }
+
+  /* large titles + spacing now that there's no top nav */
+  .lib, .cal, .dl-page { padding-top: calc(14px + var(--safe-top)) !important; }
+  .lib-head h1, .cal-title h1, .dl-head h1 { font-size: 32px !important; font-weight: 800; letter-spacing: -.01em; }
+  .sr { padding-top: calc(6px + var(--safe-top)); }
+  .sr-box { top: var(--safe-top); }
+  .home .rows { padding-bottom: 24px; }
+
+  /* things anchored to the bottom sit above the tab bar */
+  body.has-tabs .tray { bottom: calc(58px + var(--safe-bottom)); }
+  body.has-tabs .toast { bottom: calc(70px + var(--safe-bottom)); }
+
+  /* press feedback */
+  .card:active, .rm-screen:active, .sr-item:active, .lib-row:active, .cal-ev:active, .btn:active { transform: scale(.97); }
+  .card:hover { transform: none; box-shadow: none; }
+
+  /* screen transitions: `left` (not transform) so fixed headers inside a screen stay put */
+  .screen.anim-push { animation: scr-push .3s cubic-bezier(.2,.8,.2,1); }
+  .screen.anim-pop { animation: scr-pop .3s cubic-bezier(.2,.8,.2,1); }
+  .screen.anim-fade { animation: scr-fade .2s ease-out; }
+
+  /* "More" action sheet */
+  .sheet-backdrop {
+    display: flex; align-items: flex-end; position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55);
+    animation: scr-fade .2s ease-out;
+  }
+  .action-sheet {
+    width: 100%; background: #1c1c1c; border-radius: 16px 16px 0 0; padding: 8px 12px calc(12px + var(--safe-bottom));
+    display: flex; flex-direction: column; gap: 4px; animation: sheet-up .28s cubic-bezier(.2,.8,.2,1);
+  }
+  .sheet-grip { width: 38px; height: 5px; border-radius: 3px; background: #444; align-self: center; margin: 4px 0 10px; }
+  .sheet-item {
+    display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 0 12px; border-radius: 10px;
+    color: var(--fg); text-decoration: none; background: transparent; border: 0; font-size: 16px; font-weight: 600; text-align: left;
+  }
+  .sheet-item svg { width: 24px; height: 24px; color: var(--muted); }
+  .sheet-item:active { background: #2a2a2a; }
+  .sheet-install:empty { display: none; }
+  .sheet-install .installbtn { width: 100%; min-height: 48px; }
+  .sheet-cancel {
+    margin-top: 6px; min-height: 50px; border-radius: 10px; border: 0; background: #2a2a2a; color: var(--fg);
+    font-size: 16px; font-weight: 700;
+  }
+}
+
+@keyframes scr-push { from { left: 32%; opacity: 0; } to { left: 0; opacity: 1; } }
+@keyframes scr-pop { from { left: -24%; opacity: 0; } to { left: 0; opacity: 1; } }
+@keyframes scr-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .screen.anim-push, .screen.anim-pop, .screen.anim-fade, .action-sheet, .sheet-backdrop { animation: none; }
+}

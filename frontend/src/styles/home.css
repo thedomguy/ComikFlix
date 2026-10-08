@@ -1,0 +1,17 @@
+/* Home rows (base .hero/.row/.track/.card styles live in app.css). */
+.row h2 { display: flex; align-items: baseline; gap: 12px; }
+.row-link { margin-left: auto; font-size: 14px; font-weight: 600; color: var(--muted); text-decoration: none; }
+.row-link:hover { color: var(--fg); }
+
+/* "Releasing this week": a card with the expected day under it */
+.rel-card { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; scroll-snap-align: start; }
+.rel-card .card { scroll-snap-align: none; }
+.rel-when { font-size: 12px; color: var(--muted); max-width: 190px; }
+.rel-when b { color: var(--fg); text-transform: capitalize; }
+.rel-when.manual b { color: #8cc8ff; }
+.rel-when.overdue b { color: #ffcf6b; }
+
+@media (max-width: 700px) {
+  .rel-when { max-width: 140px; }
+  .row-link { font-size: 13px; }
+}

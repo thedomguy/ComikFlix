@@ -1,0 +1,11 @@
+/* Add-comic dialog + downloads tray (base styles: .ingest, .tray, .job ... in app.css) */
+.ingest-modal { z-index: 50; }
+.ingest .close { position: absolute; }
+.ingest h2 { padding-right: 44px; }
+.ingest form .btn:disabled { opacity: .5; cursor: default; }
+.thead:focus-visible { outline: 1px solid #fff; outline-offset: -1px; }
+.job .top { align-items: center; }
+.job .state { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 700px) {
+  .ingest { padding: 22px 18px 24px; }
+}

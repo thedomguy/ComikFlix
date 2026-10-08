@@ -1,0 +1,11 @@
+/* PIN login (base styles: .login, .login-card ... in app.css). The single grid column is capped
+   with minmax(0, ...) and every box is width:100% so an input's intrinsic size can't widen it. */
+.login { grid-template-columns: minmax(0, 340px); overflow-y: auto; }
+.login-card { width: 100%; max-width: 100%; box-sizing: border-box; }
+.login-field { width: 100%; min-width: 0; }
+.login-card #login-pin { width: 100%; min-width: 0; box-sizing: border-box; }
+.login-card .addbtn:disabled { opacity: .6; cursor: default; }
+@media (max-width: 380px) {
+  .login-card { padding: 24px 16px; }
+  .login-card #login-pin { letter-spacing: 6px; }
+}
