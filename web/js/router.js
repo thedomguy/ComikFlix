@@ -9,6 +9,14 @@ export function createRouter({ getLibrary, refreshLibrary }) {
     return getLibrary().find((s) => s.slug === slug);
   }
 
+  const detailOpts = (mode) => ({
+    ingestJobs: getIngestJobs(),
+    startIngest,
+    toast,
+    refreshLibrary,
+    mode,
+  });
+
   function route() {
     closeReader();
     const [, view, slug, chapter] = decodeURIComponent(location.hash).split("/");
@@ -30,11 +38,11 @@ export function createRouter({ getLibrary, refreshLibrary }) {
     modal.classList.add("hidden");
     if (view === "series" && s) {
       if (pageMode) {
-        renderDetail(s, keepScroll, { ingestJobs: getIngestJobs(), startIngest, toast, mode: "page" });
+        renderDetail(s, keepScroll, detailOpts("page"));
       } else {
         hideSeriesPage();
         renderHome(getLibrary());
-        renderDetail(s, keepScroll, { ingestJobs: getIngestJobs(), startIngest, toast, mode: "modal" });
+        renderDetail(s, keepScroll, detailOpts("modal"));
         document.body.style.overflow = "hidden";
       }
     } else if (view === "read" && s) {

@@ -1,8 +1,29 @@
 import { $, h, bg, fmtSize, fmtDate } from "./dom.js";
 import { store } from "./store.js";
+import { withBase } from "./paths.js";
 import { resumeTarget, totalPages } from "./home.js";
 
 export const isMobileSeries = () => window.matchMedia("(max-width: 700px)").matches;
+
+/** Start chapter for "check for updates" — last owned chapter, or 1 if empty. */
+function updateStartChapter(s) {
+  if (!s?.chapters?.length) return 1;
+  const max = s.chapters.reduce((m, c) => Math.max(m, parseFloat(c.id) || 0), 0);
+  return Number.isFinite(max) && max > 0 ? max : 1;
+}
+
+/** Normalize API/ISO dates to YYYY-MM-DD for <input type="date">. */
+function toDateInput(val) {
+  if (!val) return "";
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (isNaN(d)) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function sortedChapters(s) {
   const list = [...s.chapters].sort((a, b) => parseFloat(a.id) - parseFloat(b.id));
@@ -45,7 +66,7 @@ function chapterRows(s, query = "") {
     });
 }
 
-export function renderDetail(s, keepScroll, { ingestJobs = [], startIngest, toast, mode = "modal" } = {}) {
+export function renderDetail(s, keepScroll, { ingestJobs = [], startIngest, toast, refreshLibrary, mode = "modal" } = {}) {
   const pageMode = mode === "page";
   const r = resumeTarget(s);
   const close = () => (location.hash = "#/");
@@ -80,6 +101,59 @@ export function renderDetail(s, keepScroll, { ingestJobs = [], startIngest, toas
   refreshList();
   const nextRel = (s.status || "").toLowerCase() === "ongoing" && s.next_release ? nextReleaseLabel(s.next_release) : null;
   const alts = (s.alt_titles || []).slice(0, 3).join(" • ");
+
+  const dateInput = h("input", {
+    type: "date",
+    class: "release-input",
+    value: toDateInput(s.release_date),
+    "aria-label": "Release date",
+  });
+  const dateHint = h("span", { class: "release-hint" }, s.release_date ? fmtDate(s.release_date) : "");
+  const dateSave = h(
+    "button",
+    {
+      type: "button",
+      class: "release-save",
+      onclick: async () => {
+        const release_date = dateInput.value || null;
+        dateSave.disabled = true;
+        dateHint.textContent = "Saving…";
+        dateHint.className = "release-hint";
+        try {
+          const res = await fetch(withBase(`/api/series/${encodeURIComponent(s.slug)}`), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ release_date }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            dateHint.textContent = body.error || "Could not save";
+            dateHint.className = "release-hint err";
+            toast?.(body.error || "Could not save release date");
+          } else {
+            s.release_date = release_date;
+            dateHint.textContent = release_date ? fmtDate(release_date) : "Cleared";
+            dateHint.className = "release-hint ok";
+            toast?.("Release date updated");
+            refreshLibrary?.();
+          }
+        } catch {
+          dateHint.textContent = "Network error";
+          dateHint.className = "release-hint err";
+          toast?.("Network error saving release date");
+        }
+        dateSave.disabled = false;
+      },
+    },
+    "Save"
+  );
+  const releaseRow = h(
+    "div",
+    { class: "release-row" },
+    h("div", { class: "release-label" }, "Release date:"),
+    h("div", { class: "release-edit" }, dateInput, dateSave, dateHint)
+  );
+
   const sheet = h(
     "div",
     { class: "sheet" },
@@ -102,7 +176,10 @@ export function renderDetail(s, keepScroll, { ingestJobs = [], startIngest, toas
             class: "btn info",
             disabled: updating,
             onclick: async () => {
-              const res = await startIngest(s.slug);
+              const res = await startIngest({
+                series: s.slug,
+                start_chapter: updateStartChapter(s),
+              });
               if (res.error) toast(res.error);
               else toast("Checking for new chapters in the background");
             },
@@ -138,6 +215,7 @@ export function renderDetail(s, keepScroll, { ingestJobs = [], startIngest, toas
           s.artist ? h("div", {}, "Artist: ", h("span", {}, s.artist)) : null,
           s.type ? h("div", {}, "Type: ", h("span", {}, s.type)) : null,
           s.genres.length ? h("div", {}, "Genres: ", h("span", {}, s.genres.join(", "))) : null,
+          releaseRow,
           nextRel ? h("div", {}, "Next chapter: ", h("span", {}, nextRel)) : null,
           alts ? h("div", {}, "Also known as: ", h("span", {}, alts)) : null,
           s.source_url

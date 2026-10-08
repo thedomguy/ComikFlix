@@ -1,5 +1,6 @@
 import { $, h, fmtDur, fmtTime } from "./dom.js";
 import { store } from "./store.js";
+import { withBase } from "./paths.js";
 
 let ingestTimer = null;
 let ingestJobs = [];
@@ -25,8 +26,14 @@ export function toast(msg) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
-export async function startIngest(series, latest) {
-  const res = await post("/api/ingest", { series, latest: latest || null });
+/** @param {{ series: string, start_chapter: number, latest?: number|null }} opts */
+export async function startIngest({ series, start_chapter, latest = null }) {
+  const bodyIn = {
+    series,
+    start_chapter: Number(start_chapter),
+    ...(latest != null && latest !== "" ? { latest: Number(latest) } : {}),
+  };
+  const res = await post(withBase("/api/ingest"), bodyIn);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) return { error: body.error || "Could not start the download" };
   store.setTrayOpen(true);
@@ -36,7 +43,7 @@ export async function startIngest(series, latest) {
 }
 
 async function retryJob(id, chapter) {
-  const res = await post(`/api/ingest/${id}/retry`, chapter != null ? { chapter: String(chapter) } : {});
+  const res = await post(withBase(`/api/ingest/${id}/retry`), chapter != null ? { chapter: String(chapter) } : {});
   if (!res.ok) toast((await res.json().catch(() => ({}))).error || "Retry failed");
   store.setTrayOpen(true);
   pollIngest();
@@ -57,7 +64,7 @@ function makeJobEl(id) {
   r.bar = h("i");
   r.status = h("div", { class: "note" });
   r.chips = h("div", { class: "chips" });
-  r.cancel = h("button", { onclick: () => post(`/api/ingest/${id}/cancel`).then(pollIngest) }, "Cancel");
+  r.cancel = h("button", { onclick: () => post(withBase(`/api/ingest/${id}/cancel`)).then(pollIngest) }, "Cancel");
   r.retry = h("button", { class: "primary", onclick: () => retryJob(id) }, "Retry");
   r.logbtn = h("button", {
     onclick: () => {
@@ -193,6 +200,15 @@ export function openAdd() {
     placeholder: "series slug or asurascans.com comic URL",
     autocomplete: "off",
     spellcheck: "false",
+    required: true,
+  });
+  const startCh = h("input", {
+    id: "ing-start",
+    type: "number",
+    min: 1,
+    step: 1,
+    placeholder: "e.g. 1",
+    required: true,
   });
   const upto = h("input", { id: "ing-upto", type: "number", min: 1, placeholder: "all" });
   const err = h("div", { class: "err" });
@@ -207,15 +223,26 @@ export function openAdd() {
     {
       onsubmit: async (e) => {
         e.preventDefault();
+        const start = parseInt(startCh.value, 10);
+        if (!Number.isFinite(start) || start < 1) {
+          err.textContent = "Start chapter is required (whole number ≥ 1).";
+          startCh.focus();
+          return;
+        }
         go.disabled = true;
         err.textContent = "";
-        const res = await startIngest(series.value, upto.value ? parseInt(upto.value, 10) : null);
+        const res = await startIngest({
+          series: series.value.trim(),
+          start_chapter: start,
+          latest: upto.value ? parseInt(upto.value, 10) : null,
+        });
         go.disabled = false;
         if (res.error) err.textContent = res.error;
         else close();
       },
     },
-    h("div", {}, h("label", { for: "ing-series" }, "Series slug or URL"), series),
+    h("div", { class: "full" }, h("label", { for: "ing-series" }, "Series slug or URL"), series),
+    h("div", {}, h("label", { for: "ing-start" }, "Start chapter"), startCh),
     h("div", {}, h("label", { for: "ing-upto" }, "Up to chapter (optional)"), upto),
     go
   );
@@ -228,7 +255,7 @@ export function openAdd() {
       h(
         "p",
         { class: "hint" },
-        "Reads the series info (title, synopsis, genres, chapters) and downloads every available chapter in the background. Chapters you already have are skipped."
+        "Reads the series info and downloads chapters from the start chapter onward (optionally up to a latest chapter). Chapters you already have are skipped."
       ),
       form,
       err
@@ -258,7 +285,7 @@ export function initIngestUI({ refreshLibrary, onRunningChange }) {
   pollFn = async function poll() {
     clearTimeout(ingestTimer);
     try {
-      ingestJobs = await (await fetch("/api/ingest")).json();
+      ingestJobs = await (await fetch(withBase("/api/ingest"))).json();
     } catch {
       ingestTimer = setTimeout(poll, 3000);
       return;

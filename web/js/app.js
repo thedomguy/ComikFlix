@@ -2,12 +2,13 @@ import { $ } from "./dom.js";
 import { store } from "./store.js";
 import { createRouter } from "./router.js";
 import { initIngestUI } from "./ingest-ui.js";
+import { BASE, withBase, fixLibrary } from "./paths.js";
 
 let library = [];
 
 async function refreshLibrary() {
   try {
-    library = await (await fetch("/api/library")).json();
+    library = fixLibrary(await (await fetch(withBase("/api/library"))).json());
   } catch {
     return;
   }
@@ -47,33 +48,39 @@ function registerSW() {
   if (!("serviceWorker" in navigator)) return;
   const ok = location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1";
   if (!ok) return;
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  navigator.serviceWorker.register(withBase("/sw.js"), BASE ? { scope: `${BASE}/` } : undefined).catch(() => {});
 }
 
-initNav();
-initIngestUI({
-  refreshLibrary,
-  onRunningChange: () => {
-    if (location.hash.startsWith("#/series")) router.route();
-  },
-});
-registerSW();
+function showLibraryError() {
+  $("#home").textContent = "";
+  $("#home").append(
+    Object.assign(document.createElement("div"), {
+      className: "empty",
+      textContent: "Could not load the library.",
+    })
+  );
+}
 
-fetch("/api/library")
-  .then((r) => r.json())
-  .then((data) => {
-    library = data;
-    router.route();
-  })
-  .catch(() => {
-    $("#home").textContent = "";
-    $("#home").append(
-      Object.assign(document.createElement("div"), {
-        className: "empty",
-        textContent: "Could not load the library.",
-      })
-    );
+async function boot() {
+  initNav();
+  initIngestUI({
+    refreshLibrary,
+    onRunningChange: () => {
+      if (location.hash.startsWith("#/series")) router.route();
+    },
   });
+  registerSW();
 
-// Ensure trayOpen default is applied on first paint
-void store.trayOpen;
+  // Settings + progress must be ready before any route that reads the store.
+  await store.bootstrap();
+
+  try {
+    const data = await (await fetch(withBase("/api/library"))).json();
+    library = fixLibrary(data);
+    router.route();
+  } catch {
+    showLibraryError();
+  }
+}
+
+boot();

@@ -1,20 +1,23 @@
 /* Comicflix service worker — shell cache-first, library network-first, media on visit. */
-const VERSION = "comicflix-v3";
+const VERSION = "comicflix-v6";
+const BASE = self.location.pathname.replace(/\/sw\.js$/, "");
+const p = (path) => `${BASE}${path}`;
 const SHELL = [
-  "/",
-  "/index.html",
-  "/css/app.css",
-  "/js/app.js",
-  "/js/store.js",
-  "/js/dom.js",
-  "/js/home.js",
-  "/js/detail.js",
-  "/js/reader.js",
-  "/js/ingest-ui.js",
-  "/js/router.js",
-  "/manifest.webmanifest",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
+  p("/"),
+  p("/index.html"),
+  p("/css/app.css"),
+  p("/js/app.js"),
+  p("/js/paths.js"),
+  p("/js/store.js"),
+  p("/js/dom.js"),
+  p("/js/home.js"),
+  p("/js/detail.js"),
+  p("/js/reader.js"),
+  p("/js/ingest-ui.js"),
+  p("/js/router.js"),
+  p("/manifest.webmanifest"),
+  p("/icons/icon-192.png"),
+  p("/icons/icon-512.png"),
 ];
 
 self.addEventListener("install", (event) => {
@@ -62,26 +65,37 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   if (url.origin !== self.location.origin) return;
 
-  if (url.pathname.startsWith("/api/ingest")) return; // network only
+  const path = url.pathname;
+  const under = (prefix) => path === `${BASE}${prefix}` || path.startsWith(`${BASE}${prefix}`);
 
-  if (url.pathname === "/api/library") {
+  // Settings / progress / ingest / series mutations — network only (no stale cache).
+  if (
+    under("/api/ingest") ||
+    under("/api/settings") ||
+    under("/api/progress") ||
+    under("/api/series")
+  ) {
+    return;
+  }
+
+  if (path === p("/api/library")) {
     event.respondWith(networkFirst(event.request, VERSION));
     return;
   }
 
-  if (url.pathname.startsWith("/media/")) {
+  if (under("/media/") || under("/api/r2/")) {
     event.respondWith(cacheFirst(event.request, VERSION));
     return;
   }
 
   // App shell & static assets
   if (
-    url.pathname === "/" ||
-    url.pathname.startsWith("/css/") ||
-    url.pathname.startsWith("/js/") ||
-    url.pathname.startsWith("/icons/") ||
-    url.pathname.endsWith(".webmanifest") ||
-    url.pathname === "/index.html"
+    path === p("/") ||
+    under("/css/") ||
+    under("/js/") ||
+    under("/icons/") ||
+    path.endsWith(".webmanifest") ||
+    path === p("/index.html")
   ) {
     event.respondWith(cacheFirst(event.request, VERSION));
   }

@@ -1,4 +1,6 @@
-/** Unified single-user settings + reading progress (localStorage). */
+/** Settings + reading progress: in-memory cache backed by API (not localStorage). */
+
+import { withBase } from "./paths.js";
 
 const KEY = "comicflix";
 const LEGACY = {
@@ -13,69 +15,236 @@ const defaults = () => ({
   sortNewest: true,
   dismissedJobs: [],
   trayOpen: true,
-  v: 1,
 });
 
-function readRaw() {
+let state = defaults();
+let booted = false;
+let bootPromise = null;
+
+const pendingProgress = new Map();
+let progressTimer = null;
+const PROGRESS_DEBOUNCE_MS = 400;
+
+async function fetchJson(url) {
   try {
-    return JSON.parse(localStorage.getItem(KEY) || "null");
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
     return null;
   }
 }
 
-function migrate() {
-  let data = readRaw();
-  if (data && data.v === 1 && data.progress) return data;
+async function putJson(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    /* offline / API missing — keep memory cache */
+    return false;
+  }
+}
 
+function settingsPayload() {
+  return {
+    readerWidth: state.readerWidth,
+    sortNewest: state.sortNewest,
+    trayOpen: state.trayOpen,
+    dismissedJobs: state.dismissedJobs,
+  };
+}
+
+function putSettings() {
+  return putJson(withBase("/api/settings"), settingsPayload());
+}
+
+function putProgressSlug(slug, data) {
+  return putJson(withBase(`/api/progress/${encodeURIComponent(slug)}`), {
+    chapter: data.chapter,
+    frac: data.frac,
+    read: data.read || [],
+    at: data.at,
+  });
+}
+
+function scheduleProgressWrite(slug) {
+  const data = state.progress[slug];
+  if (!data) return;
+  pendingProgress.set(slug, data);
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(flushProgress, PROGRESS_DEBOUNCE_MS);
+}
+
+async function flushProgress() {
+  clearTimeout(progressTimer);
+  progressTimer = null;
+  const entries = [...pendingProgress.entries()];
+  pendingProgress.clear();
+  await Promise.all(entries.map(([slug, data]) => putProgressSlug(slug, data)));
+}
+
+/** Read and normalize any pre-API localStorage blob (does not write back). */
+function readLocalMigration() {
+  let raw = null;
+  try {
+    raw = JSON.parse(localStorage.getItem(KEY) || "null");
+  } catch {
+    raw = null;
+  }
+
+  const hasKey = (() => {
+    try {
+      return localStorage.getItem(KEY) != null;
+    } catch {
+      return false;
+    }
+  })();
+
+  let legacyHit = false;
   const next = defaults();
 
-  // Old format: comicflix was { [slug]: { chapter, frac, read, at } }
-  if (data && !data.v && typeof data === "object") {
-    const looksLikeProgress = Object.values(data).some(
+  if (raw && raw.v === 1 && raw.progress) {
+    Object.assign(next, {
+      progress: raw.progress || {},
+      readerWidth: raw.readerWidth ?? next.readerWidth,
+      sortNewest: raw.sortNewest ?? next.sortNewest,
+      dismissedJobs: Array.isArray(raw.dismissedJobs) ? raw.dismissedJobs : [],
+      trayOpen: raw.trayOpen ?? next.trayOpen,
+    });
+  } else if (raw && !raw.v && typeof raw === "object") {
+    const looksLikeProgress = Object.values(raw).some(
       (v) => v && typeof v === "object" && ("chapter" in v || "read" in v)
     );
-    if (looksLikeProgress) next.progress = data;
-  } else if (data?.progress) {
-    Object.assign(next, data);
+    if (looksLikeProgress) next.progress = raw;
+    else if (raw.progress) Object.assign(next, raw);
+  } else if (raw?.progress) {
+    Object.assign(next, raw);
   }
 
   try {
     const w = +(localStorage.getItem(LEGACY.width) || "");
-    if (Number.isFinite(w) && w > 0) next.readerWidth = Math.min(1400, Math.max(400, w));
+    if (Number.isFinite(w) && w > 0) {
+      next.readerWidth = Math.min(1400, Math.max(400, w));
+      legacyHit = true;
+    }
   } catch {}
   try {
     const s = localStorage.getItem(LEGACY.sort) || "";
-    if (s === "oldest" || s.endsWith("-asc")) next.sortNewest = false;
-    else if (s) next.sortNewest = true;
+    if (s === "oldest" || s.endsWith("-asc")) {
+      next.sortNewest = false;
+      legacyHit = true;
+    } else if (s) {
+      next.sortNewest = true;
+      legacyHit = true;
+    }
   } catch {}
   try {
     const d = JSON.parse(localStorage.getItem(LEGACY.dismissed) || "[]");
-    if (Array.isArray(d)) next.dismissedJobs = d.slice(-200);
+    if (Array.isArray(d) && d.length) {
+      next.dismissedJobs = d.slice(-200);
+      legacyHit = true;
+    }
   } catch {}
 
-  next.v = 1;
+  const hadLocal = hasKey || legacyHit || Object.keys(next.progress).length > 0;
+  return hadLocal ? next : null;
+}
+
+function clearLocalStorage() {
   try {
+    localStorage.removeItem(KEY);
     localStorage.removeItem(LEGACY.width);
     localStorage.removeItem(LEGACY.sort);
     localStorage.removeItem(LEGACY.dismissed);
   } catch {}
-  return next;
 }
 
-let state = migrate();
-
-function write(s) {
-  if (s) state = s;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {}
+function applySettings(src) {
+  if (!src || typeof src !== "object") return;
+  if (src.readerWidth != null) {
+    const w = +src.readerWidth;
+    if (Number.isFinite(w) && w > 0) state.readerWidth = Math.min(1400, Math.max(400, w));
+  }
+  if (src.sortNewest != null) state.sortNewest = !!src.sortNewest;
+  if (src.trayOpen != null) state.trayOpen = !!src.trayOpen;
+  if (Array.isArray(src.dismissedJobs)) state.dismissedJobs = src.dismissedJobs.slice(-200);
 }
 
-// Persist migrated shape once at boot
-write();
+function applyProgressMap(map) {
+  if (!map || typeof map !== "object") return;
+  // Accept either a bare slug→entry map or { progress: { ... } }
+  const src = map.progress && typeof map.progress === "object" && !("chapter" in map.progress)
+    ? map.progress
+    : map;
+  for (const [slug, entry] of Object.entries(src)) {
+    if (!entry || typeof entry !== "object") continue;
+    if (!("chapter" in entry || "read" in entry || "frac" in entry)) continue;
+    state.progress[slug] = {
+      chapter: entry.chapter,
+      frac: entry.frac ?? 0,
+      read: Array.isArray(entry.read) ? entry.read : [],
+      at: entry.at || Date.now(),
+    };
+  }
+}
+
+async function doBootstrap() {
+  const local = readLocalMigration();
+  const [apiSettings, apiProgress] = await Promise.all([
+    fetchJson(withBase("/api/settings")),
+    fetchJson(withBase("/api/progress")),
+  ]);
+
+  state = defaults();
+  applySettings(apiSettings);
+  applyProgressMap(apiProgress);
+
+  if (local) {
+    // One-time migrate: browser cache wins, then push to API and clear localStorage.
+    // Only clear localStorage after a successful push so a missing API does not wipe data.
+    applySettings(local);
+    state.progress = { ...state.progress, ...local.progress };
+    const settingsOk = await putSettings();
+    const progressSlugs = Object.keys(state.progress);
+    const progressOk = (
+      await Promise.all(progressSlugs.map((slug) => putProgressSlug(slug, state.progress[slug])))
+    ).every(Boolean);
+    if (settingsOk && (progressSlugs.length === 0 || progressOk)) {
+      clearLocalStorage();
+    }
+  }
+
+  booted = true;
+  return state;
+}
+
+function ensureFlushHooks() {
+  if (ensureFlushHooks.done) return;
+  ensureFlushHooks.done = true;
+  window.addEventListener("pagehide", () => {
+    flushProgress();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushProgress();
+  });
+}
 
 export const store = {
+  /** Load settings + progress from API (and migrate localStorage once). Await before routing. */
+  bootstrap() {
+    if (!bootPromise) {
+      ensureFlushHooks();
+      bootPromise = doBootstrap();
+    }
+    return bootPromise;
+  },
+  get ready() {
+    return booted;
+  },
   get() {
     return state;
   },
@@ -87,14 +256,17 @@ export const store = {
     const read = new Set(cur.read || []);
     if (done) read.add(chapter);
     state.progress[slug] = { chapter, frac, read: [...read], at: Date.now() };
-    write();
+    scheduleProgressWrite(slug);
+  },
+  flush() {
+    return flushProgress();
   },
   get readerWidth() {
     return state.readerWidth;
   },
   setReaderWidth(n) {
     state.readerWidth = Math.min(1400, Math.max(400, +n || 800));
-    write();
+    putSettings();
     return state.readerWidth;
   },
   get sortNewest() {
@@ -102,14 +274,14 @@ export const store = {
   },
   setSortNewest(v) {
     state.sortNewest = !!v;
-    write();
+    putSettings();
   },
   get trayOpen() {
     return state.trayOpen;
   },
   setTrayOpen(v) {
     state.trayOpen = !!v;
-    write();
+    putSettings();
   },
   get dismissedJobs() {
     return new Set(state.dismissedJobs);
@@ -118,10 +290,10 @@ export const store = {
     const set = new Set(state.dismissedJobs);
     set.add(id);
     state.dismissedJobs = [...set].slice(-200);
-    write();
+    putSettings();
   },
   undismissJob(id) {
     state.dismissedJobs = state.dismissedJobs.filter((x) => x !== id);
-    write();
+    putSettings();
   },
 };

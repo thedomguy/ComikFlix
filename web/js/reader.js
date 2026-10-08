@@ -186,6 +186,9 @@ export function renderReader(s, chapterId) {
   readerCleanup = () => {
     loader.disconnect();
     clearTimeout(timer);
+    // Flush any pending scroll progress before leaving the reader.
+    store.saveProgress(s.slug, chap.id, frac(), frac() > 0.97);
+    store.flush();
     root.removeEventListener("scroll", onScroll);
     root.removeEventListener("pointerup", onPointer);
     window.removeEventListener("keydown", onKey);
