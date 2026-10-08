@@ -9,3 +9,8 @@ optimized/
 pages.json
 *.part
 *.tmp
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
