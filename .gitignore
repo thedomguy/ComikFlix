@@ -14,3 +14,8 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# React frontend: dependencies and build output (server serves web-dist/ when present)
+frontend/node_modules/
+web-dist/
+*.tsbuildinfo

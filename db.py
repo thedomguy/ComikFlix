@@ -17,12 +17,19 @@ from typing import Any, Iterator
 HERE = Path(__file__).resolve().parent
 DEFAULT_DB = HERE / "data" / "comikflix.db"
 
-SETTINGS_KEYS = ("readerWidth", "sortNewest", "trayOpen", "dismissedJobs")
+SETTINGS_KEYS = ("readerWidth", "sortNewest", "trayOpen", "dismissedJobs", "autoScroll")
+DEFAULT_AUTOSCROLL = {
+    "speed": 40,  # px/sec
+    "persist": "global",  # global | series | chapter
+    "bySeries": {},  # slug -> speed
+    "byChapter": {},  # "slug:chapter" -> speed
+}
 DEFAULT_SETTINGS = {
     "readerWidth": 800,
     "sortNewest": True,
     "trayOpen": True,
     "dismissedJobs": [],
+    "autoScroll": dict(DEFAULT_AUTOSCROLL),
 }
 
 _local = threading.local()
@@ -72,6 +79,15 @@ def get_conn() -> sqlite3.Connection:
                 init_schema(conn)
                 _local.conn = conn
     return conn
+
+
+def close_thread_conn() -> None:
+    """Close this thread's connection. The server runs each request on a fresh thread,
+    so without this every request leaks a connection (and its file descriptors)."""
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        conn.close()
+        _local.conn = None
 
 
 @contextmanager
@@ -151,6 +167,40 @@ CREATE TABLE IF NOT EXISTS progress (
     updated_at TEXT NOT NULL
 );
 
+-- every download (ingest) attempt ever, from any source (app, Jarvis via ChatGPT/Claude/...)
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    title TEXT,
+    source TEXT NOT NULL,          -- "app", "jarvis:chatgpt", "jarvis:claude-ai", ...
+    tags_json TEXT,                -- ["via:jarvis", "client:chatgpt", ...]
+    start_chapter TEXT,
+    latest INTEGER,
+    state TEXT NOT NULL,           -- running | done | partial | cancelled | error | interrupted
+    stage TEXT,
+    error TEXT,
+    counts_json TEXT,              -- {"done": n, "failed": n, ...} by chapter state
+    failed_json TEXT,              -- failed chapter numbers
+    log_json TEXT,                 -- last log lines
+    started REAL NOT NULL,
+    finished REAL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_jobs_started ON ingest_jobs(started);
+
+-- single-user auth (see auth.py): password hash + one row per signed-in device
+CREATE TABLE IF NOT EXISTS auth (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    user_agent TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_chapters_series ON chapters(series_slug);
 CREATE INDEX IF NOT EXISTS idx_pages_chapter ON pages(series_slug, chapter_id);
 """
@@ -189,15 +239,52 @@ def _loads(text: str | None, default: Any = None) -> Any:
 
 def get_settings() -> dict:
     rows = get_conn().execute("SELECT key, value_json FROM settings").fetchall()
-    out = dict(DEFAULT_SETTINGS)
+    out = {**DEFAULT_SETTINGS, "autoScroll": dict(DEFAULT_AUTOSCROLL)}
     for row in rows:
-        if row["key"] in SETTINGS_KEYS:
+        if row["key"] not in SETTINGS_KEYS:
+            continue
+        if row["key"] == "autoScroll":
+            out["autoScroll"] = _normalize_autoscroll(_loads(row["value_json"], {}))
+        else:
             out[row["key"]] = _loads(row["value_json"], out[row["key"]])
     return out
 
 
+def _normalize_autoscroll(raw) -> dict:
+    out = {
+        "speed": DEFAULT_AUTOSCROLL["speed"],
+        "persist": DEFAULT_AUTOSCROLL["persist"],
+        "bySeries": {},
+        "byChapter": {},
+    }
+    if not isinstance(raw, dict):
+        return out
+    try:
+        speed = float(raw.get("speed", out["speed"]))
+        out["speed"] = int(max(10, min(1000, speed)))
+    except (TypeError, ValueError):
+        pass
+    persist = str(raw.get("persist") or out["persist"]).lower()
+    if persist in ("global", "series", "chapter"):
+        out["persist"] = persist
+    for key, dest in (("bySeries", "bySeries"), ("byChapter", "byChapter")):
+        src = raw.get(key)
+        if not isinstance(src, dict):
+            continue
+        cleaned = {}
+        for k, v in src.items():
+            try:
+                cleaned[str(k)] = int(max(10, min(1000, float(v))))
+            except (TypeError, ValueError):
+                continue
+        out[dest] = cleaned
+    return out
+
+
 def put_settings(data: dict) -> dict:
+    cur = get_settings()
     blob = dict(DEFAULT_SETTINGS)
+    blob["autoScroll"] = _normalize_autoscroll(cur.get("autoScroll"))
     if "readerWidth" in data:
         try:
             w = float(data["readerWidth"])
@@ -212,6 +299,8 @@ def put_settings(data: dict) -> dict:
         jobs = data["dismissedJobs"]
         if isinstance(jobs, list):
             blob["dismissedJobs"] = [str(x) for x in jobs][-200:]
+    if "autoScroll" in data:
+        blob["autoScroll"] = _normalize_autoscroll(data.get("autoScroll"))
     with transaction() as conn:
         for key in SETTINGS_KEYS:
             conn.execute(
@@ -474,3 +563,57 @@ def list_pages(series_slug: str, chapter_id: str) -> list[sqlite3.Row]:
 def series_count() -> int:
     row = get_conn().execute("SELECT COUNT(*) AS n FROM series").fetchone()
     return int(row["n"]) if row else 0
+
+
+# ---- download history ----
+
+def save_ingest_job(job: dict) -> None:
+    """Upsert one job's summary (called by IngestManager on start, progress and finish)."""
+    counts: dict[str, int] = {}
+    for c in (job.get("chapters") or {}).values():
+        counts[c["state"]] = counts.get(c["state"], 0) + 1
+    failed = [n for n, c in (job.get("chapters") or {}).items() if c["state"] == "failed"]
+    with transaction() as c:
+        c.execute(
+            """
+            INSERT INTO ingest_jobs (id, slug, title, source, tags_json, start_chapter, latest, state,
+                stage, error, counts_json, failed_json, log_json, started, finished, updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title, state = excluded.state, stage = excluded.stage,
+                error = excluded.error, counts_json = excluded.counts_json,
+                failed_json = excluded.failed_json, log_json = excluded.log_json,
+                finished = excluded.finished, updated = excluded.updated
+            """,
+            (
+                job["id"], job["slug"], job.get("title"), job.get("source") or "app",
+                _dumps(job.get("tags") or []), job.get("start_chapter"), job.get("latest"),
+                job["state"], job.get("stage"), job.get("error"), _dumps(counts), _dumps(failed),
+                _dumps((job.get("log") or [])[-30:]), job["started"], job.get("finished"),
+                datetime.now(timezone.utc).timestamp(),
+            ),
+        )
+
+
+def mark_interrupted_ingest_jobs() -> None:
+    """Jobs still 'running' in the table died with the previous server process."""
+    with transaction() as c:
+        c.execute(
+            "UPDATE ingest_jobs SET state = 'interrupted', stage = 'Server restarted', "
+            "finished = COALESCE(finished, updated) WHERE state = 'running'"
+        )
+
+
+def list_ingest_jobs(limit: int = 500) -> list[dict]:
+    rows = get_conn().execute(
+        "SELECT * FROM ingest_jobs ORDER BY started DESC LIMIT ?", (limit,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = _loads(d.pop("tags_json"), [])
+        d["counts"] = _loads(d.pop("counts_json"), {})
+        d["failed"] = _loads(d.pop("failed_json"), [])
+        d["log"] = _loads(d.pop("log_json"), [])
+        out.append(d)
+    return out

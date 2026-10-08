@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Centralised ingestion: series slug -> metadata + chapters uploaded to Cloudflare R2.
+"""Centralised ingestion: series slug -> SQLite metadata + Asura CDN page URLs.
 
 Usage:
     ./ingest.py SERIES_SLUG_OR_URL --start N [--latest M] [-w WORKERS]
 
 1. Fetches https://asurascans.com/comics/<slug> and extracts series info + chapter list.
-   Metadata is written to SQLite (via db_ingest / sibling db.py); cover goes to R2.
-2. For each unlocked chapter from --start through --latest (or remote latest): download
-   pages to an ephemeral temp dir, optionally optimize to WebP, upload to R2, write
-   chapter/pages rows, then delete the temp files.
+   Metadata is written to SQLite (via db_ingest / sibling db.py).
+2. For each unlocked chapter from --start through --latest (or remote latest): fetch
+   chapter HTML, record page CDN URLs + aspect ratios in SQLite. No image download
+   and no R2 upload (reader serves Asura CDN directly for now).
+
+R2 upload remains available via sync_library.py --download for a later cutover.
 
 Re-running skips chapters already marked ready in the DB. Jobs stay in-memory
 (IngestManager); they are not persisted.
@@ -26,6 +28,7 @@ import time
 import urllib.error
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,6 +50,7 @@ MAX_CHAPTERS = 5000
 FETCH_DELAY = 0.5  # seconds after a chapter HTML/download attempt
 MAX_LOG = 300
 MAX_JOBS = 20
+PERSIST_EVERY = 2.0  # seconds between download-history saves while a job runs
 CHAPTER_CONCURRENCY = 2  # polite parallel chapter downloads
 OPT_WORKERS = min(4, max(1, (os.cpu_count() or 4)))
 IMG_EXTS = {".webp", ".png", ".jpg", ".jpeg", ".gif"}
@@ -344,7 +348,7 @@ def _sync_chapter_metadata(info: dict, *, overwrite: bool = False) -> None:
 # --------------------------------------------------------------------------- chapters
 
 def chapter_complete(slug: str, chapter: str) -> bool:
-    """True when SQLite has this chapter with status='ready' (uploaded to R2)."""
+    """True when SQLite has this chapter with status='ready' (CDN metadata recorded)."""
     return db_ingest.chapter_is_ready(slug, chapter)
 
 
@@ -358,6 +362,48 @@ def _page_files(chap_dir: Path) -> list[Path]:
     return files
 
 
+def ingest_chapter_metadata(
+    slug: str,
+    chapter: str,
+    progress=None,
+    published_at: str | None = None,
+) -> int:
+    """Fetch chapter HTML and record Asura CDN page URLs in SQLite (no download/R2).
+
+    Returns page count. Raises on failure.
+    """
+    url = CHAPTER_URL.format(slug=slug, chapter=chapter)
+    pages_meta = asura.extract_pages(asura.fetch_html(url))
+    if not pages_meta:
+        raise RuntimeError("no reader pages found on chapter page")
+
+    pages = []
+    for p in pages_meta:
+        page_index = int(p["page_index"])
+        aspect = (p.get("aspect_ratio") or "").replace(" ", "") or None
+        pages.append({
+            "page_index": page_index,
+            "r2_key": None,
+            "public_url": None,
+            "cdn_url": _page_cdn_url(slug, str(chapter), page_index, p.get("src")),
+            "aspect_ratio": aspect,
+            "alt": p.get("alt"),
+        })
+    pages.sort(key=lambda row: row["page_index"])
+    if progress:
+        progress(len(pages), len(pages))
+
+    db_ingest.mark_chapter_ready(
+        slug, str(chapter),
+        page_count=len(pages),
+        size_bytes=0,
+        source_url=url,
+        published_at=published_at,
+        pages=pages,
+    )
+    return len(pages)
+
+
 def ingest_chapter(
     slug: str,
     chapter: str,
@@ -369,7 +415,9 @@ def ingest_chapter(
 ) -> int:
     """Fetch one chapter into a temp dir, optimize, upload to R2, write DB rows.
 
-    Returns page count. Raises on failure. Temp files are always deleted.
+    Opt-in path (e.g. sync_library.py --download). Default ingest uses
+    ingest_chapter_metadata instead. Returns page count. Raises on failure.
+    Temp files are always deleted.
     """
     url = CHAPTER_URL.format(slug=slug, chapter=chapter)
     pages_meta = asura.extract_pages(asura.fetch_html(url))
@@ -433,9 +481,6 @@ def ingest_chapter(
                 page_num = int(stem)
                 page_index = page_num - 1
             key = r2.page_key(slug, str(chapter), page_num)
-            # Normalize extension to .webp key even if source stayed png/jpg
-            if path.suffix.lower() != ".webp":
-                key = r2.page_key(slug, str(chapter), page_num)
             pub = client.upload_file(
                 path, key,
                 content_type="image/webp" if path.suffix.lower() == ".webp" else None,
@@ -469,6 +514,46 @@ def _error_text(e: Exception) -> str:
     return str(e) or e.__class__.__name__
 
 
+# --------------------------------------------------------------------------- catalog
+
+CATALOG_TTL = 6 * 3600
+_catalog: dict = {"at": 0.0, "slugs": []}
+_catalog_lock = threading.Lock()
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower().replace("'", ""))
+
+
+def catalog_search(query: str, limit: int = 8) -> list[dict]:
+    """Find Asura series by title. The /comics page lists the whole catalogue (its search
+    parameter is ignored), so match the query against slug words locally; cached 6h."""
+    with _catalog_lock:
+        if time.time() - _catalog["at"] > CATALOG_TTL or not _catalog["slugs"]:
+            page = asura.fetch_html(f"{BASE}/comics")
+            _catalog["slugs"] = sorted(set(re.findall(r"/comics/([a-z0-9-]+-[0-9a-f]{8})", page)))
+            _catalog["at"] = time.time()
+        slugs = list(_catalog["slugs"])
+    q = _words(query)
+    if not q:
+        return []
+    out = []
+    for slug in slugs:
+        name = re.sub(r"-[0-9a-f]{8}$", "", slug)
+        words = name.split("-")
+        overlap = sum(1 for w in q if w in words) / len(q)
+        ratio = SequenceMatcher(None, " ".join(q), " ".join(words)).ratio()
+        score = round(0.6 * overlap + 0.4 * ratio, 3)
+        if score >= 0.35:
+            out.append({
+                "slug": slug,
+                "title": " ".join(words).title(),
+                "url": f"{BASE}/comics/{slug}",
+                "score": score,
+            })
+    return sorted(out, key=lambda r: -r["score"])[:limit]
+
+
 # --------------------------------------------------------------------------- jobs
 
 class IngestManager:
@@ -477,8 +562,8 @@ class IngestManager:
     Job states: running, done, partial (some chapters failed), cancelled, error (couldn't
     even read the series). retry() re-runs failed/unprocessed chapters of a finished job.
 
-    Chapters are downloaded to ephemeral temp dirs, uploaded to R2, then deleted.
-    Completion is tracked via SQLite chapter status='ready' (not manifest.json).
+    For now each chapter only records Asura CDN page URLs (no binary download / R2).
+    Completion is tracked via SQLite chapter status='ready'.
     """
 
     def __init__(self, workers: int = 8):
@@ -489,7 +574,15 @@ class IngestManager:
 
     # -- public API
 
-    def start(self, slug: str, start_chapter: int | float | str, latest: int | None = None) -> dict:
+    def start(
+        self,
+        slug: str,
+        start_chapter: int | float | str,
+        latest: int | None = None,
+        source: str = "app",
+        tags: list[str] | None = None,
+    ) -> dict:
+        """source: who asked ("app", "jarvis:chatgpt", ...); tags are kept with the job's history."""
         slug = parse_slug(slug)
         try:
             start = float(start_chapter)
@@ -518,6 +611,8 @@ class IngestManager:
                 "error": None,
                 "chapters": {},
                 "log": [],
+                "source": source,
+                "tags": tags or [],
             }
             self._jobs[job["id"]] = job
             self._cancels[job["id"]] = threading.Event()
@@ -575,6 +670,8 @@ class IngestManager:
     # -- internals
 
     def _spawn(self, job: dict, target) -> None:
+        done = threading.Event()
+
         def runner():
             try:
                 target(job)
@@ -582,7 +679,35 @@ class IngestManager:
                 self._log(job, "error", f"Unexpected error: {_error_text(e)}")
                 with self._lock:
                     job.update(state="error", error=_error_text(e), finished=time.time())
+            finally:
+                done.set()
+                db.close_thread_conn()
+
+        def persister():
+            # The download history (db.ingest_jobs) is written from this one thread only:
+            # on start, every couple of seconds while running, and once more at the end.
+            try:
+                while True:
+                    finished = done.wait(PERSIST_EVERY)
+                    with self._lock:
+                        snap = copy.deepcopy(job)
+                    try:
+                        db.save_ingest_job(snap)
+                    except Exception:
+                        pass  # history is best-effort; never break a download over it
+                    if finished:
+                        return
+            finally:
+                db.close_thread_conn()
+
+        try:
+            with self._lock:
+                snap = copy.deepcopy(job)
+            db.save_ingest_job(snap)
+        except Exception:
+            pass
         threading.Thread(target=runner, daemon=True).start()
+        threading.Thread(target=persister, daemon=True).start()
 
     def _log(self, job: dict, level: str, msg: str) -> None:
         with self._lock:
@@ -593,25 +718,13 @@ class IngestManager:
         with self._lock:
             job["chapters"][number].update(fields)
 
-    def _client_or_fail(self, job: dict) -> r2.R2Client | None:
-        try:
-            return r2.get_client()
-        except r2.R2ConfigError as e:
-            self._log(job, "error", str(e))
-            with self._lock:
-                job.update(state="error", error=str(e), finished=time.time(), stage="Failed")
-            return None
-
     def _run(self, job: dict) -> None:
         slug = job["slug"]
-        client = self._client_or_fail(job)
-        if client is None:
-            return
 
         self._log(job, "info", f"Fetching series info for {slug}")
         try:
             info = fetch_series_info(slug)
-            save_series_info(info, client=client)
+            save_series_info(info)  # metadata + CDN stubs; no R2
         except Exception as e:
             self._log(job, "error", f"Could not read series: {_error_text(e)}")
             with self._lock:
@@ -634,23 +747,11 @@ class IngestManager:
                 }
                 for c in chapters
             }
-        # Keep boto client off the job dict (snapshot copies); side map by job id
-        self._r2_for_job = getattr(self, "_r2_for_job", {})
-        self._r2_for_job[job["id"]] = client
 
         self._log(job, "info", f"{info['title']}: {len(chapters)} chapters from {job['start_chapter']}"
                   + (f" to {job['latest']}" if job["latest"] is not None else " to latest")
                   + (f", {len(locked)} locked (premium/early access, skipped)" if locked else ""))
         self._process(job, [c["number"] for c in chapters if not c["locked"]])
-
-    def _r2(self, job: dict) -> r2.R2Client:
-        clients = getattr(self, "_r2_for_job", {})
-        client = clients.get(job["id"])
-        if client is None:
-            client = r2.get_client()
-            clients[job["id"]] = client
-            self._r2_for_job = clients
-        return client
 
     def _one_chapter(self, job: dict, number: str, cancel: threading.Event) -> None:
         slug = job["slug"]
@@ -660,7 +761,7 @@ class IngestManager:
             job["stage"] = f"Chapter {number}"
         if chapter_complete(slug, number):
             self._set(job, number, state="cached")
-            self._log(job, "info", f"Chapter {number}: already on R2 (ready)")
+            self._log(job, "info", f"Chapter {number}: already ready (CDN)")
             return
 
         t0 = time.time()
@@ -668,17 +769,17 @@ class IngestManager:
         with self._lock:
             published = (job["chapters"].get(number) or {}).get("date")
         self._set(job, number, state="running", started=t0, finished=None, error=None, done=0, total=0)
-        self._log(job, "info", f"Chapter {number}: fetching → R2")
+        self._log(job, "info", f"Chapter {number}: fetching CDN pages")
 
         def progress(done, total, n=number):
             self._set(job, n, done=done, total=total)
 
         try:
-            pages = ingest_chapter(
-                slug, number, self.workers, self._r2(job), progress, published_at=published,
+            pages = ingest_chapter_metadata(
+                slug, number, progress, published_at=published,
             )
             self._set(job, number, state="done", pages=pages, done=pages, total=pages, finished=time.time())
-            self._log(job, "info", f"Chapter {number}: {pages} pages → R2 in {time.time() - t0:.1f}s")
+            self._log(job, "info", f"Chapter {number}: {pages} CDN pages in {time.time() - t0:.1f}s")
         except Exception as e:
             try:
                 db_ingest.mark_chapter_failed(slug, number, published_at=published)
@@ -686,19 +787,12 @@ class IngestManager:
                 pass
             self._set(job, number, state="failed", error=_error_text(e), finished=time.time())
             self._log(job, "error", f"Chapter {number}: {_error_text(e)}")
+        finally:
+            db.close_thread_conn()  # pool threads would otherwise each keep a connection open
         if not cancel.is_set():
             time.sleep(FETCH_DELAY)
 
     def _process(self, job: dict, numbers: list[str]) -> None:
-        # Ensure R2 client is available (retry path may skip _run)
-        try:
-            self._r2(job)
-        except r2.R2ConfigError as e:
-            self._log(job, "error", str(e))
-            with self._lock:
-                job.update(state="error", error=str(e), finished=time.time(), stage="Failed")
-            return
-
         cancel = self._cancels[job["id"]]
         pending = []
         for number in numbers:
@@ -706,7 +800,7 @@ class IngestManager:
                 break
             if chapter_complete(job["slug"], number):
                 self._set(job, number, state="cached")
-                self._log(job, "info", f"Chapter {number}: already on R2 (ready)")
+                self._log(job, "info", f"Chapter {number}: already ready (CDN)")
             else:
                 pending.append(number)
 
@@ -727,10 +821,8 @@ class IngestManager:
             job.update(state=state, finished=time.time(), stage={
                 "done": "Complete", "partial": "Finished with failures", "cancelled": "Cancelled",
             }[state])
-        # Drop client reference
-        getattr(self, "_r2_for_job", {}).pop(job["id"], None)
         ok = states.count("done")
-        self._log(job, "info", f"Finished: {ok} uploaded, {states.count('cached')} already ready, "
+        self._log(job, "info", f"Finished: {ok} indexed, {states.count('cached')} already ready, "
                   f"{states.count('failed')} failed" + (", cancelled" if cancel.is_set() else ""))
 
 

@@ -3,32 +3,41 @@
 
 Usage:
     ./server.py [-p PORT] [--host HOST] [--no-open]
+    ./server.py --set-pin          # turn on the PIN login (or change it; signs out all devices)
 
 Library metadata lives in SQLite (see db.py). Optional env COMIKFLIX_DB overrides the
-DB path (default: data/comikflix.db). Page images currently render from Asura CDN URLs;
-R2 ingest + /media remain available for a later cutover.
+DB path (default: data/comikflix.db). Page images and default ingest currently use Asura
+CDN URLs only; R2 upload (sync_library --download) + /media remain for a later cutover.
 
 The "Add Comic" / "Update" buttons run ingest.py in the background.
 """
 import argparse
+import getpass
 import json
 import mimetypes
+import os
+import queue
 import re
 import threading
 import webbrowser
 from functools import partial
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+import auth
 import db
 import ingest
 import r2
+import remote
 
 HERE = Path(__file__).resolve().parent
 DOWNLOADS = HERE / "downloads"
-WEB = HERE / "web"
+# The React app (frontend/, `npm run build`) builds into web-dist/; until that exists, or
+# with COMIKFLIX_WEB=web, the original vanilla app in web/ is served.
+WEB = HERE / (os.environ.get("COMIKFLIX_WEB") or ("web-dist" if (HERE / "web-dist" / "index.html").exists() else "web"))
 INGEST = ingest.IngestManager()
 
 # PWA / static MIME fixes
@@ -76,33 +85,71 @@ def _cover_urls(row) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _json_field(text, default=None):
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pages_payload(slug: str, chapter_id: str) -> list[dict]:
+    """Build reader page objects for one chapter."""
+    pages_out = []
+    for pg in db.list_pages(slug, chapter_id):
+        keys = pg.keys()
+        cdn = pg["cdn_url"] if "cdn_url" in keys else None
+        src = _page_src(slug, chapter_id, pg["page_index"], cdn)
+        if not src:
+            continue
+        aspect = pg["aspect_ratio"]
+        pages_out.append({
+            "src": src,
+            "aspect": aspect.replace(" ", "") if aspect else None,
+        })
+    return pages_out
+
+
+def _chapter_page_count(slug: str, ch) -> int:
+    """Prefer chapters.page_count; fall back to counting page rows."""
+    try:
+        n = int(ch["page_count"] or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return n
+    row = db.get_conn().execute(
+        "SELECT COUNT(*) AS n FROM pages WHERE series_slug = ? AND chapter_id = ?",
+        (slug, ch["chapter_id"]),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def _first_page_src(slug: str, chapter_id: str) -> str | None:
+    pages = db.list_pages(slug, chapter_id)
+    if not pages:
+        return _synthesize_asura_cdn(slug, chapter_id, 0)
+    pg = pages[0]
+    keys = pg.keys()
+    cdn = pg["cdn_url"] if "cdn_url" in keys else None
+    return _page_src(slug, chapter_id, pg["page_index"], cdn)
+
+
 def scan_library() -> list[dict]:
-    """Build the library JSON from SQLite (not filesystem series.json)."""
+    """Thin library index: series + chapter metadata, no page URL arrays."""
     db.init_schema()
     series_list = []
     for row in db.list_series_rows():
         slug = row["slug"]
         chapters_out = []
         for ch in db.list_chapters(slug):
-            chapter_id = ch["chapter_id"]
-            pages_out = []
-            for pg in db.list_pages(slug, chapter_id):
-                keys = pg.keys()
-                cdn = pg["cdn_url"] if "cdn_url" in keys else None
-                src = _page_src(slug, chapter_id, pg["page_index"], cdn)
-                if not src:
-                    continue
-                aspect = pg["aspect_ratio"]
-                pages_out.append({
-                    "src": src,
-                    "aspect": aspect.replace(" ", "") if aspect else None,
-                })
-            # Skip chapters with no readable pages
-            if not pages_out:
+            page_count = _chapter_page_count(slug, ch)
+            if page_count <= 0:
                 continue
             chapters_out.append({
-                "id": chapter_id,
-                "pages": pages_out,
+                "id": ch["chapter_id"],
+                "page_count": page_count,
                 "size": 0,  # binaries not served locally/R2 while on CDN-only mode
                 "source_url": ch["source_url"],
                 "date": ch["published_at"],
@@ -114,22 +161,14 @@ def scan_library() -> list[dict]:
         first = chapters_out[0]
         title = row["title"] or title_from_slug(slug)
         poster, _ = _cover_urls(row)
-        backdrop = first["pages"][0]["src"]
+        backdrop = _first_page_src(slug, first["id"])
         if not poster:
             poster = backdrop
 
-        def _j(text, default=None):
-            if not text:
-                return default
-            try:
-                return json.loads(text)
-            except (TypeError, ValueError):
-                return default
-
-        remote = _j(row["remote_chapters_json"])
-        release = _j(row["release_json"])
-        genres = _j(row["genres_json"], []) or []
-        alt_titles = _j(row["alt_titles_json"], []) or []
+        remote = _json_field(row["remote_chapters_json"])
+        release = _json_field(row["release_json"])
+        genres = _json_field(row["genres_json"], []) or []
+        alt_titles = _json_field(row["alt_titles_json"], []) or []
 
         series_list.append({
             "slug": slug,
@@ -148,10 +187,34 @@ def scan_library() -> list[dict]:
             "source_url": row["source_url"] or first.get("source_url"),
             "poster": poster,
             "backdrop": backdrop,
-            "size": sum(c["size"] for c in chapters_out),
+            "size": 0,
+            "page_total": sum(c["page_count"] for c in chapters_out),
             "chapters": chapters_out,
         })
     return series_list
+
+
+def get_chapter(slug: str, chapter_id: str) -> dict | None:
+    """Full chapter payload including page srcs (loaded when opening the reader)."""
+    db.init_schema()
+    ch = db.get_conn().execute(
+        "SELECT * FROM chapters WHERE series_slug = ? AND chapter_id = ?",
+        (slug, str(chapter_id)),
+    ).fetchone()
+    if not ch:
+        return None
+    pages = _pages_payload(slug, str(chapter_id))
+    if not pages:
+        return None
+    return {
+        "id": str(chapter_id),
+        "pages": pages,
+        "page_count": len(pages),
+        "size": 0,
+        "source_url": ch["source_url"],
+        "date": ch["published_at"],
+        "status": ch["status"],
+    }
 
 
 def _read_json_body(handler: SimpleHTTPRequestHandler, max_bytes: int = 65536) -> tuple[dict | None, str | None]:
@@ -222,8 +285,191 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # ---- auth ----
+
+    def client_ip(self) -> str:
+        # Bound to 127.0.0.1 behind nginx, which passes the real client in X-Real-IP.
+        return self.headers.get("X-Real-IP") or self.client_address[0]
+
+    def session_token(self) -> str | None:
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie") or "")
+        except Exception:
+            return None
+        m = jar.get(auth.COOKIE)
+        return m.value if m else None
+
+    def authed(self) -> bool:
+        return (
+            not auth.enabled()
+            or auth.valid_api_token(self.headers.get("Authorization"))
+            or auth.valid_session(self.session_token())
+        )
+
+    def blocked(self, path: str) -> bool:
+        """Gate data APIs and media behind a session; the static shell stays public."""
+        if path in ("/api/me", "/api/login", "/api/logout"):
+            return False
+        if not (path.startswith("/api/") or path.startswith("/media/")):
+            return False
+        if self.authed():
+            return False
+        self.send_json({"error": "login required"}, HTTPStatus.UNAUTHORIZED)
+        return True
+
+    def set_session_cookie(self, token: str, base: str, max_age: int) -> None:
+        # The app may live under a subpath (/readers); scope the cookie to it.
+        base = base if re.fullmatch(r"(/[A-Za-z0-9._-]+)*", base or "") else ""
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        self.send_header(
+            "Set-Cookie",
+            f"{auth.COOKIE}={token}; Path={base or '/'}; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}",
+        )
+
+    def login(self, data: dict) -> None:
+        ip = self.client_ip()
+        if not auth.enabled():
+            return self.send_json({"ok": True})
+        blocked = auth.locked_out(ip)
+        if blocked:
+            return self.send_json({"error": blocked}, HTTPStatus.TOO_MANY_REQUESTS)
+        if not auth.check_pin(str(data.get("pin") or "")):
+            auth.record_failure(ip)
+            return self.send_json({"error": "Wrong PIN"}, HTTPStatus.UNAUTHORIZED)
+        auth.clear_failures(ip)
+        token = auth.create_session(self.headers.get("User-Agent", ""))
+        body = json.dumps({"ok": True}).encode()
+        self.send_response(HTTPStatus.OK)
+        self.set_session_cookie(token, str(data.get("base") or ""), auth.SESSION_DAYS * 86400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def logout(self, data: dict) -> None:
+        auth.delete_session(self.session_token())
+        body = b'{"ok": true}'
+        self.send_response(HTTPStatus.OK)
+        self.set_session_cookie("", str(data.get("base") or ""), 0)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def ingest_source(self, data: dict) -> tuple[str, list[str]]:
+        """Who started a download, for the history: the app, or e.g. Jarvis on behalf of ChatGPT.
+        Callers identify themselves with `X-ComikFlix-Source: jarvis:chatgpt`; extra `tags` may
+        come in the body. Tags are normalised to short lowercase labels."""
+        clean = lambda v: re.sub(r"[^a-z0-9:._-]+", "-", str(v).strip().lower())[:60].strip("-")  # noqa: E731
+        source = clean(self.headers.get("X-ComikFlix-Source") or "") or "app"
+        via, _, client = source.partition(":")
+        tags = [f"via:{via}"] + ([f"client:{client}"] if client else [])
+        extra = data.get("tags")
+        if isinstance(extra, list):
+            tags += [t for t in (clean(x) for x in extra[:10]) if t]
+        return source, list(dict.fromkeys(tags))
+
+    def downloads(self) -> list[dict]:
+        """Every download attempt ever, newest first; running ones use the live in-memory state."""
+        rows = db.list_ingest_jobs()
+        for r in rows:
+            if r["state"] == "running":
+                live = INGEST.snapshot(r["id"])
+                if live:
+                    counts: dict[str, int] = {}
+                    for c in live["chapters"].values():
+                        counts[c["state"]] = counts.get(c["state"], 0) + 1
+                    r.update(
+                        title=live["title"] or r["title"], stage=live["stage"], counts=counts,
+                        state=live["state"], log=live["log"][-30:],
+                        failed=[n for n, c in live["chapters"].items() if c["state"] == "failed"],
+                    )
+        return rows
+
+    # ---- remote control (server-sent events) ----
+
+    def sse_start(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("X-Accel-Buffering", "no")  # nginx: stream, don't buffer
+        self.end_headers()
+        self.wfile.write(b"retry: 2000\n\n")
+        self.wfile.flush()
+
+    def sse_send(self, event: str, data) -> None:
+        self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+        self.wfile.flush()
+
+    def sse_ping(self) -> None:
+        self.wfile.write(b": ping\n\n")
+        self.wfile.flush()
+
+    def serve_screen(self, sid: str, name: str) -> None:
+        """A tab that can be driven: streams commands until it disconnects."""
+        screen, conn = remote.connect_screen(sid, name)
+        try:
+            self.sse_start()
+            self.sse_send("hello", {"id": sid})
+            while screen.conn is conn:
+                try:
+                    cmd = screen.commands.get(timeout=remote.HEARTBEAT)
+                except queue.Empty:
+                    self.sse_ping()
+                    continue
+                if screen.conn is not conn:  # superseded by a reconnect: hand it over
+                    remote.send_command(sid, cmd)
+                    break
+                self.sse_send("cmd", cmd)
+        except OSError:
+            pass  # client went away
+        finally:
+            remote.disconnect_screen(screen, conn)
+
+    def serve_watch(self, sid: str) -> None:
+        """A remote following one screen's state."""
+        q, current = remote.watch(sid)
+        try:
+            self.sse_start()
+            self.sse_send("state", current) if current else self.sse_send("gone", {})
+            while True:
+                try:
+                    event, data = q.get(timeout=remote.HEARTBEAT)
+                except queue.Empty:
+                    self.sse_ping()
+                    continue
+                self.sse_send(event, data)
+        except OSError:
+            pass
+        finally:
+            remote.unwatch(sid, q)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if self.blocked(path):
+            return
+        if path == "/api/me":
+            return self.send_json({"auth": auth.enabled(), "authed": self.authed(), "pin": auth.pin_length()})
+        if path.startswith("/api/remote/"):
+            qs = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            sid = qs.get("id", "")[:64]
+            if path == "/api/remote/screens":
+                return self.send_json(remote.list_screens())
+            if not sid:
+                return self.send_json({"error": "id is required"}, HTTPStatus.BAD_REQUEST)
+            if path == "/api/remote/screen":
+                return self.serve_screen(sid, qs.get("name", "")[:80])
+            if path == "/api/remote/watch":
+                return self.serve_watch(sid)
+            return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        if path == "/api/downloads":
+            return self.send_json(self.downloads())
+        if path == "/api/catalog":
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0][:100]
+            try:
+                return self.send_json(ingest.catalog_search(q))
+            except Exception as e:
+                return self.send_json({"error": f"Could not read the Asura catalogue: {e}"}, HTTPStatus.BAD_GATEWAY)
         if path == "/api/library":
             return self.send_json(scan_library())
         if path == "/api/settings":
@@ -235,6 +481,18 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith("/api/ingest/"):
             job = INGEST.snapshot(path.rsplit("/", 1)[-1])
             return self.send_json(job or {"error": "unknown job"}, HTTPStatus.OK if job else HTTPStatus.NOT_FOUND)
+        parts = path.split("/")
+        # GET /api/series/<slug>/chapters/<id>
+        if (
+            len(parts) == 6
+            and parts[1:3] == ["api", "series"]
+            and parts[4] == "chapters"
+        ):
+            slug, chapter_id = unquote(parts[3]), unquote(parts[5])
+            chap = get_chapter(slug, chapter_id)
+            if not chap:
+                return self.send_json({"error": "unknown chapter"}, HTTPStatus.NOT_FOUND)
+            return self.send_json(chap)
         if path.startswith(r2.PROXY_PREFIX):
             key = unquote(path[len(r2.PROXY_PREFIX):])
             return self._send_r2_object(key)
@@ -242,6 +500,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         path = self.path.split("?", 1)[0]
+        if self.blocked(path):
+            return
         data = self._require_json_mutation()
         if data is None:
             return
@@ -257,6 +517,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_PATCH(self):
         path = self.path.split("?", 1)[0]
+        if self.blocked(path):
+            return
         data = self._require_json_mutation()
         if data is None:
             return
@@ -271,9 +533,34 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if self.blocked(path):
+            return
         data = self._require_json_mutation()
         if data is None:
             return
+        if path == "/api/login":
+            return self.login(data)
+        if path == "/api/logout":
+            return self.logout(data)
+        if path == "/api/remote/signal":
+            # {screen, remote, toScreen: bool, data}: WebRTC offer/answer between the two
+            sid, rid = str(data.get("screen") or "")[:64], str(data.get("remote") or "")[:64]
+            payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+            if not sid or not rid:
+                return self.send_json({"error": "screen and remote are required"}, HTTPStatus.BAD_REQUEST)
+            if data.get("toScreen"):
+                ok = remote.send_command(sid, {"type": "signal", "from": rid, "data": payload})
+            else:
+                remote.signal_remotes(sid, {"to": rid, "data": payload})
+                ok = True
+            return self.send_json({"ok": ok}, HTTPStatus.OK if ok else HTTPStatus.NOT_FOUND)
+        if path in ("/api/remote/state", "/api/remote/cmd"):
+            sid = str(data.get("id") or "")[:64]
+            if path == "/api/remote/state":
+                ok = remote.set_state(sid, data.get("state") if isinstance(data.get("state"), dict) else {})
+            else:
+                ok = isinstance(data.get("cmd"), dict) and remote.send_command(sid, data["cmd"])
+            return self.send_json({"ok": ok}, HTTPStatus.OK if ok else HTTPStatus.NOT_FOUND)
         if path == "/api/ingest":
             latest = data.get("latest")
             try:
@@ -283,8 +570,11 @@ class Handler(SimpleHTTPRequestHandler):
             start_chapter = data.get("start_chapter")
             if start_chapter in (None, ""):
                 return self.send_json({"error": "start_chapter is required"}, HTTPStatus.BAD_REQUEST)
+            source, tags = self.ingest_source(data)
             try:
-                job = INGEST.start(str(data.get("series", "")), latest=latest, start_chapter=start_chapter)
+                job = INGEST.start(
+                    str(data.get("series", "")), latest=latest, start_chapter=start_chapter, source=source, tags=tags
+                )
             except ValueError as e:
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
             return self.send_json(job, HTTPStatus.ACCEPTED)
@@ -301,6 +591,17 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError as e:
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            db.close_thread_conn()
+
+    def do_HEAD(self):
+        if self.blocked(self.path.split("?", 1)[0]):
+            return
+        super().do_HEAD()
 
     def end_headers(self):
         path = self.path.split("?", 1)[0]
@@ -326,9 +627,20 @@ def main() -> None:
     ap.add_argument("-p", "--port", type=int, default=8000)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-open", action="store_true", help="don't open a browser tab")
+    ap.add_argument("--set-pin", action="store_true", help="set the login PIN (6-8 digits) and exit")
     args = ap.parse_args()
 
     db.init_schema()
+    if args.set_pin:
+        pin = getpass.getpass("New PIN (6-8 digits): ")
+        if not auth.valid_pin_format(pin) or pin != getpass.getpass("Repeat: "):
+            raise SystemExit("PINs must match and be 6 to 8 digits.")
+        auth.set_pin(pin)
+        print("PIN set. All devices were signed out; sign in again with the PIN.")
+        return
+    db.mark_interrupted_ingest_jobs()  # their worker threads died with the previous process
+    if not auth.enabled():
+        print("WARNING: no PIN set; the library is open to anyone. Run: server.py --set-pin")
     server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=str(HERE)))
     url = f"http://{args.host}:{args.port}/"
     print(f"Serving library from {db.db_path()}  media={DOWNLOADS}  at {url}  (Ctrl+C to stop)")

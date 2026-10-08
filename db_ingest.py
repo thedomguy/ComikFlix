@@ -1,6 +1,7 @@
 """Ingest-facing DB helpers. Delegates to sibling `db.py` (SQLite/API owner).
 
-Shared schema: series / chapters (status missing|ready|failed) / pages (r2_key, public_url).
+Shared schema: series / chapters (status missing|ready|failed) /
+pages (cdn_url; optional r2_key / public_url for later cutover).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ def ensure_schema() -> None:
 
 
 def chapter_is_ready(slug: str, chapter_id: str) -> bool:
-    """True when the chapter row exists with status='ready' (R2 upload done)."""
+    """True when the chapter row exists with status='ready' (CDN metadata recorded)."""
     ensure_schema()
     row = db.get_conn().execute(
         "SELECT status FROM chapters WHERE series_slug=? AND chapter_id=?",
