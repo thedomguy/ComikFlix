@@ -7,7 +7,7 @@ Usage:
 
 Library metadata lives in SQLite (see db.py). Optional env COMIKFLIX_DB overrides the
 DB path (default: data/comikflix.db). Page images and default ingest currently use Asura
-CDN URLs only; R2 upload (sync_library --download) + /media remain for a later cutover.
+CDN URLs only; R2 upload (sync_library --download) remains for a later cutover.
 
 The "Add Comic" / "Update" buttons run ingest.py in the background.
 """
@@ -36,10 +36,8 @@ import r2
 import remote
 
 HERE = Path(__file__).resolve().parent
-DOWNLOADS = HERE / "downloads"
-# The React app (frontend/, `npm run build`) builds into web-dist/; until that exists, or
-# with COMIKFLIX_WEB=web, the original vanilla app in web/ is served.
-WEB = HERE / (os.environ.get("COMIKFLIX_WEB") or ("web-dist" if (HERE / "web-dist" / "index.html").exists() else "web"))
+# The React app (frontend/, `npm run build`) builds into web-dist/.
+WEB = HERE / (os.environ.get("COMIKFLIX_WEB") or "web-dist")
 INGEST = ingest.IngestManager()
 
 # PWA / static MIME fixes
@@ -297,14 +295,11 @@ def _read_json_body(handler: SimpleHTTPRequestHandler, max_bytes: int = 65536) -
 
 
 class Handler(SimpleHTTPRequestHandler):
-    """Serves web/ at /, downloads/ at /media/, and JSON APIs under /api/."""
+    """Serves the built app (web-dist/) at / and JSON APIs under /api/."""
 
     def translate_path(self, path: str) -> str:
         path = unquote(path.split("?", 1)[0].split("#", 1)[0])
-        if path.startswith("/media/"):
-            root, rel = DOWNLOADS, path[len("/media/"):]
-        else:
-            root, rel = WEB, path.lstrip("/") or "index.html"
+        root, rel = WEB, path.lstrip("/") or "index.html"
         target = (root / rel).resolve()
         if root.resolve() not in target.parents and target != root.resolve():
             return str(WEB / "__forbidden__")  # path traversal attempt -> 404
@@ -406,7 +401,7 @@ class Handler(SimpleHTTPRequestHandler):
         """Gate data APIs and media behind a session; the static shell stays public."""
         if path in ("/api/me", "/api/login", "/api/logout"):
             return False
-        if not (path.startswith("/api/") or path.startswith("/media/")):
+        if not path.startswith("/api/"):
             return False
         if self.authed():
             return False
@@ -721,9 +716,7 @@ class Handler(SimpleHTTPRequestHandler):
             return None  # _send_r2_object sets its own; errors stay as before
         if self._response_code not in (HTTPStatus.OK, HTTPStatus.PARTIAL_CONTENT, HTTPStatus.NOT_MODIFIED):
             return "no-cache"  # never let a 404/redirect be cached long-term
-        if path.startswith("/media/"):
-            return "public, max-age=86400"
-        if path.startswith("/assets/") and WEB.name == "web-dist":
+        if path.startswith("/assets/"):
             return "public, max-age=31536000, immutable"  # Vite content-hashed file names
         if path.startswith("/icons/"):
             return "public, max-age=604800"
@@ -741,7 +734,7 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        if not self.path.startswith(("/media/", "/api/ingest", r2.PROXY_PREFIX)):
+        if not self.path.startswith(("/api/ingest", r2.PROXY_PREFIX)):
             super().log_message(fmt, *args)
 
 
@@ -766,7 +759,7 @@ def main() -> None:
         print("WARNING: no PIN set; the library is open to anyone. Run: server.py --set-pin")
     server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=str(HERE)))
     url = f"http://{args.host}:{args.port}/"
-    print(f"Serving library from {db.db_path()}  media={DOWNLOADS}  at {url}  (Ctrl+C to stop)")
+    print(f"Serving library from {db.db_path()}  app={WEB}  at {url}  (Ctrl+C to stop)")
 
     def warm_catalog() -> None:
         # Fill ingest's 6h Asura catalogue cache so the first "Add Comic" search is instant.

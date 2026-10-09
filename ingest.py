@@ -40,8 +40,6 @@ import download
 import optimize_images
 import r2
 
-HERE = Path(__file__).resolve().parent
-DOWNLOADS = HERE / "downloads"  # legacy; no longer the library of record
 BASE = "https://asurascans.com"
 SERIES_URL = BASE + "/comics/{slug}"
 CHAPTER_URL = BASE + "/comics/{slug}/chapter/{chapter}"
@@ -112,9 +110,17 @@ def _label(number) -> str:
 
 
 def fetch_series_info(slug: str) -> dict:
-    """Scrape the series page. Raises if the series can't be found."""
+    """Scrape the series page. Raises if the series can't be found.
+
+    Asura sometimes changes a series' id suffix and redirects the old URL; the slug we end up
+    on is the real one (info["slug"]), and info["moved_from"] names the old one."""
+    page, final_url = asura.fetch_page(SERIES_URL.format(slug=slug))
+    moved_from = None
+    if "/comics/" in final_url:
+        current = parse_slug(final_url)
+        if current != slug:
+            moved_from, slug = slug, current
     url = SERIES_URL.format(slug=slug)
-    page = asura.fetch_html(url)
 
     series = chapters = None
     for props in _islands(page):
@@ -151,6 +157,7 @@ def fetch_series_info(slug: str) -> dict:
 
     return {
         "slug": slug,
+        "moved_from": moved_from,
         "source_url": url,
         "title": title,
         "description": _text(series.get("description") or ""),
@@ -249,6 +256,8 @@ def save_series_info(
         except Exception:
             pass  # cover upload is cosmetic
 
+    if info.get("moved_from"):
+        db.move_series(info["moved_from"], info["slug"])
     release = estimate_release(info["chapters"], info.get("status"))
     db_ingest.upsert_series(
         info,
@@ -682,13 +691,17 @@ class IngestManager:
         self._log(job, "info", f"Fetching series info for {slug}")
         try:
             info = fetch_series_info(slug)
-            save_series_info(info)  # metadata + CDN stubs; no R2
+            save_series_info(info)  # metadata + chapter rows; no R2
         except Exception as e:
             self._log(job, "error", f"Could not read series: {_error_text(e)}")
             with self._lock:
                 job.update(state="error", error=_error_text(e), finished=time.time(), stage="Failed")
             return
 
+        if info["slug"] != slug:
+            self._log(job, "info", f"Asura moved this series to {info['slug']}; library updated to match")
+            with self._lock:
+                job["slug"] = info["slug"]
         chapters = info["chapters"]
         start = float(job["start"])
         chapters = [c for c in chapters if float(c["number"]) >= start]

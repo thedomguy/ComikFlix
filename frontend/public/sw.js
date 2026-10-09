@@ -3,7 +3,7 @@
      deploy shows up on a normal reload).
    - /assets/ (content-hashed) and /icons/: cache-first. After each fresh shell, cached assets
      that the new HTML (or the JS/CSS it loads) no longer references are dropped.
-   - Media + /api/r2/: cache-first. Other /api/: never cached. */
+   - /api/r2/: cache-first. Other /api/: never cached. */
 const VERSION = "comicflix-react-v2";
 const BASE = self.location.pathname.replace(/\/sw\.js$/, "");
 
@@ -98,7 +98,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
   const path = url.pathname.slice(BASE.length) || "/";
   if (path === "/api/library") return event.respondWith(networkFirst(event.request));
-  if (path.startsWith("/media/") || path.startsWith("/api/r2/")) return event.respondWith(cacheFirst(event.request));
+  if (path.startsWith("/api/r2/")) return event.respondWith(cacheFirst(event.request));
   if (path.startsWith("/api/")) return; // live data: never cached
   if (path.startsWith("/assets/") || path.startsWith("/icons/")) return event.respondWith(cacheFirst(event.request));
   if (event.request.mode === "navigate") return event.respondWith(shell(event));

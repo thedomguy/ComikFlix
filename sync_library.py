@@ -55,6 +55,9 @@ def main() -> int:
         print(f"[{n}/{len(slugs)}] {slug}")
         try:
             info = ingest.fetch_series_info(slug)
+            if info["moved_from"]:
+                print(f"    moved on Asura -> {info['slug']} (library merged)")
+            slug = info["slug"]
             ingest.save_series_info(
                 info,
                 overwrite=args.force,

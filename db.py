@@ -498,7 +498,9 @@ def upsert_series(row: dict) -> None:
     bump()
 
 
-def upsert_chapter(row: dict) -> None:
+def upsert_chapter(row: dict, pages: list[dict] | None = None) -> None:
+    """Upsert a chapter row; with `pages`, also replace its pages in the same transaction
+    (a chapter must never be marked ready without the pages that make it ready)."""
     with transaction() as conn:
         conn.execute(
             """
@@ -522,50 +524,38 @@ def upsert_chapter(row: dict) -> None:
                 row.get("size_bytes"),
             ),
         )
+        if pages is not None:
+            _replace_pages(conn, row["series_slug"], str(row["chapter_id"]), pages)
     bump()
 
 
-def replace_pages(series_slug: str, chapter_id: str, pages: list[dict]) -> None:
-    chapter_id = str(chapter_id)
-    with transaction() as conn:
-        conn.execute(
-            "DELETE FROM pages WHERE series_slug = ? AND chapter_id = ?",
-            (series_slug, chapter_id),
-        )
-        conn.executemany(
-            """
-            INSERT INTO pages (
-                series_slug, chapter_id, page_index, r2_key, public_url, cdn_url,
-                aspect_ratio, alt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    series_slug,
-                    chapter_id,
-                    int(p["page_index"]),
-                    p.get("r2_key"),
-                    p.get("public_url"),
-                    p.get("cdn_url"),
-                    p.get("aspect_ratio"),
-                    p.get("alt"),
-                )
-                for p in pages
-            ],
-        )
-    bump()
+def _replace_pages(conn: sqlite3.Connection, series_slug: str, chapter_id: str, pages: list[dict]) -> None:
+    conn.execute(
+        "DELETE FROM pages WHERE series_slug = ? AND chapter_id = ?",
+        (series_slug, chapter_id),
+    )
+    conn.executemany(
+        """
+        INSERT INTO pages (
+            series_slug, chapter_id, page_index, r2_key, public_url, cdn_url,
+            aspect_ratio, alt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                series_slug,
+                chapter_id,
+                int(p["page_index"]),
+                p.get("r2_key"),
+                p.get("public_url"),
+                p.get("cdn_url"),
+                p.get("aspect_ratio"),
+                p.get("alt"),
+            )
+            for p in pages
+        ],
+    )
 
-
-def set_page_cdn_url(series_slug: str, chapter_id: str, page_index: int, cdn_url: str | None) -> None:
-    with transaction() as conn:
-        conn.execute(
-            """
-            UPDATE pages SET cdn_url = ?
-            WHERE series_slug = ? AND chapter_id = ? AND page_index = ?
-            """,
-            (cdn_url, series_slug, str(chapter_id), int(page_index)),
-        )
-    bump()
 
 
 def patch_series(slug: str, fields: dict) -> dict | None:
@@ -598,6 +588,63 @@ def list_series_rows() -> list[sqlite3.Row]:
     return get_conn().execute(
         "SELECT * FROM series ORDER BY title COLLATE NOCASE, slug"
     ).fetchall()
+
+
+def move_series(old: str, new: str) -> None:
+    """Asura moved a series to a new slug: carry everything stored under `old` over to `new`
+    (merging when `new` already exists: its chapters win, read lists are combined, the newer
+    progress position wins), then drop `old`."""
+    with transaction() as conn:
+        if old == new or not conn.execute("SELECT 1 FROM series WHERE slug = ?", (old,)).fetchone():
+            return
+
+        def copy_rows(table: str, key: str, where: str, args: tuple) -> None:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+            src = ", ".join("?" if c == key else c for c in cols)
+            conn.execute(
+                f"INSERT INTO {table} ({', '.join(cols)}) SELECT {src} FROM {table} WHERE {where}",
+                (new, *args),
+            )
+
+        if not conn.execute("SELECT 1 FROM series WHERE slug = ?", (new,)).fetchone():
+            copy_rows("series", "slug", "slug = ?", (old,))
+        moving = [r[0] for r in conn.execute(
+            "SELECT chapter_id FROM chapters WHERE series_slug = ? AND chapter_id NOT IN "
+            "(SELECT chapter_id FROM chapters WHERE series_slug = ?)", (old, new))]
+        for ch in moving:
+            copy_rows("chapters", "series_slug", "series_slug = ? AND chapter_id = ?", (old, ch))
+            copy_rows("pages", "series_slug", "series_slug = ? AND chapter_id = ?", (old, ch))
+
+        p_old = conn.execute("SELECT * FROM progress WHERE series_slug = ?", (old,)).fetchone()
+        p_new = conn.execute("SELECT * FROM progress WHERE series_slug = ?", (new,)).fetchone()
+        if p_old and not p_new:
+            conn.execute("UPDATE progress SET series_slug = ? WHERE series_slug = ?", (new, old))
+        elif p_old and p_new:
+            newer = p_old if (p_old["updated_at"] or "") > (p_new["updated_at"] or "") else p_new
+            read = list(dict.fromkeys(_loads(p_new["read_json"], []) + _loads(p_old["read_json"], [])))
+            conn.execute(
+                "UPDATE progress SET chapter = ?, frac = ?, read_json = ?, updated_at = ?, read_at = ? "
+                "WHERE series_slug = ?",
+                (newer["chapter"], newer["frac"], _dumps(read), newer["updated_at"],
+                 max(p_old["read_at"] or "", p_new["read_at"] or "") or None, new),
+            )
+        conn.execute("DELETE FROM progress WHERE series_slug = ?", (old,))
+
+        row = conn.execute("SELECT value_json FROM settings WHERE key = 'autoScroll'").fetchone()
+        a = _loads(row["value_json"], None) if row else None
+        if isinstance(a, dict):
+            by_series = a.get("bySeries") or {}
+            if old in by_series:
+                by_series.setdefault(new, by_series[old])
+                del by_series[old]
+            a["byChapter"] = {
+                (f"{new}:{k.split(':', 1)[1]}" if k.startswith(old + ":") else k): v
+                for k, v in (a.get("byChapter") or {}).items()
+            }
+            conn.execute("UPDATE settings SET value_json = ? WHERE key = 'autoScroll'", (_dumps(a),))
+
+        conn.execute("DELETE FROM series WHERE slug = ?", (old,))  # cascades to its chapters/pages
+    bump()
 
 
 def list_chapters(series_slug: str) -> list[sqlite3.Row]:

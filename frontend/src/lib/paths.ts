@@ -2,7 +2,7 @@
  *  Derived from the page URL (the bundle lives in /assets/, so import.meta.url won't do). */
 export const BASE = location.pathname.replace(/\/[^/]*$/, "").replace(/\/$/, "");
 
-/** Prefix a root-absolute path (/api/..., /media/...) with BASE. */
+/** Prefix a root-absolute path (/api/..., /assets/...) with BASE. */
 export function withBase(path: string): string;
 export function withBase(path: string | null | undefined): string | null | undefined;
 export function withBase(path: string | null | undefined) {

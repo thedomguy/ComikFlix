@@ -115,6 +115,7 @@ def upsert_chapter_row(
     page_count: int | None = None,
     status: str = "missing",
     size_bytes: int | None = None,
+    pages: list[dict] | None = None,
 ) -> None:
     ensure_schema()
     existing = db.get_conn().execute(
@@ -129,12 +130,7 @@ def upsert_chapter_row(
         "page_count": page_count if page_count is not None else (existing["page_count"] if existing else None),
         "status": status,
         "size_bytes": size_bytes if size_bytes is not None else (existing["size_bytes"] if existing else None),
-    })
-
-
-def replace_pages(slug: str, chapter_id: str, pages: list[dict]) -> None:
-    ensure_schema()
-    db.replace_pages(slug, str(chapter_id), pages)
+    }, pages)
 
 
 def mark_chapter_ready(
@@ -151,9 +147,8 @@ def mark_chapter_ready(
         slug, chapter_id,
         source_url=source_url, published_at=published_at,
         page_count=page_count, status="ready", size_bytes=size_bytes,
+        pages=pages,  # same transaction as status='ready'
     )
-    if pages is not None:
-        replace_pages(slug, chapter_id, pages)
 
 
 def mark_chapter_failed(

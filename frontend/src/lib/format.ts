@@ -5,7 +5,7 @@ const RESIZE = true;
 const ASURA_CDN = "https://cdn.asurascans.com/";
 
 /** Cover/backdrop thumbnail through Asura's Cloudflare image resizer (~160 KB -> ~40 KB).
- *  Other URLs (local /media, R2, ...) pass through unchanged. Not for reader pages. */
+ *  Other URLs (R2, ...) pass through unchanged. Not for reader pages. */
 export function thumb(url: string, w: number): string;
 export function thumb(url: string | null | undefined, w: number): string | null | undefined;
 export function thumb(url: string | null | undefined, w: number) {

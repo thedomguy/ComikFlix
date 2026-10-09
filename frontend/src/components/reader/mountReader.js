@@ -1,4 +1,4 @@
-// The reader's imperative core, ported unchanged from the original app (web/js/reader.js):
+// The reader's imperative core (ported from the original vanilla app):
 // lazy page loading, overlay bars (tap to toggle), auto-scroll, progress + resume toast,
 // keyboard, and the remote-control bridge. ReaderPage loads the chapter and mounts this
 // into its .reader element; the returned function tears it all down (and saves progress).

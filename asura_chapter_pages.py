@@ -41,14 +41,19 @@ CDN_IMG_RE = re.compile(
 )
 
 
-def fetch_html(url: str, timeout: float = 30.0) -> str:
+def fetch_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
+    """(html, final url after redirects)."""
     with http_util.open_url(
         url,
         headers={"Accept": "text/html,application/xhtml+xml"},
         timeout=timeout,
     ) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
-        return resp.read().decode(charset, errors="replace")
+        return resp.read().decode(charset, errors="replace"), resp.geturl()
+
+
+def fetch_html(url: str, timeout: float = 30.0) -> str:
+    return fetch_page(url, timeout)[0]
 
 
 def _parse_aspect_ratio(style: str | None) -> str | None:
