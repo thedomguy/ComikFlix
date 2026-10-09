@@ -535,7 +535,7 @@ class IngestManager:
     def start(
         self,
         slug: str,
-        start_chapter: int | float | str,
+        start_chapter: int | float | str = 1,
         latest: int | None = None,
         source: str = "app",
         tags: list[str] | None = None,
@@ -787,8 +787,8 @@ class IngestManager:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("series", help="series slug or asurascans.com comic URL")
-    ap.add_argument("--start", "--start-chapter", dest="start_chapter", required=True,
-                    help="first chapter to ingest (inclusive)")
+    ap.add_argument("--start", "--start-chapter", dest="start_chapter", default="1",
+                    help="first chapter to ingest (inclusive, default 1)")
     ap.add_argument("--latest", type=int, help="only chapters up to and including this number")
     ap.add_argument("-w", "--workers", type=int, default=8)
     args = ap.parse_args()

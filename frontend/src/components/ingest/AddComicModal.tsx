@@ -4,7 +4,8 @@ import { startIngest } from "../../lib/ingest";
 /** "Add a comic": series slug/URL + start chapter (+ optional last chapter) -> background ingest. */
 export function AddComicModal({ onClose }: { onClose: () => void }) {
   const [series, setSeries] = useState("");
-  const [start, setStart] = useState("");
+  // Prefilled: only changed when earlier chapters were already read elsewhere.
+  const [start, setStart] = useState("1");
   const [upto, setUpto] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -23,9 +24,9 @@ export function AddComicModal({ onClose }: { onClose: () => void }) {
   async function submit(e: FormEvent) {
     e.preventDefault();
     const s = series.trim();
-    const first = parseInt(start, 10);
+    const first = start.trim() ? parseInt(start, 10) : 1;
     if (!s) return setErr("Enter a series slug or URL.");
-    if (!Number.isFinite(first) || first < 1) return setErr("Start chapter is required (whole number ≥ 1).");
+    if (!Number.isFinite(first) || first < 1) return setErr("Start chapter must be a whole number ≥ 1.");
     const last = upto ? parseInt(upto, 10) : null;
     if (last != null && (!Number.isFinite(last) || last < first)) return setErr("“Up to” must be at least the start chapter.");
     setBusy(true);
@@ -71,7 +72,7 @@ export function AddComicModal({ onClose }: { onClose: () => void }) {
               inputMode="numeric"
               min={1}
               step={1}
-              placeholder="e.g. 1"
+              placeholder="1"
               value={start}
               onChange={(e) => setStart(e.target.value)}
             />

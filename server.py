@@ -667,7 +667,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "Latest chapter must be a whole number"}, HTTPStatus.BAD_REQUEST)
             start_chapter = data.get("start_chapter")
             if start_chapter in (None, ""):
-                return self.send_json({"error": "start_chapter is required"}, HTTPStatus.BAD_REQUEST)
+                start_chapter = 1  # only set when earlier chapters were already read elsewhere
             source, tags = self.ingest_source(data)
             try:
                 job = INGEST.start(
