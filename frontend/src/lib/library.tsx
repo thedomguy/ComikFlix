@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
+import { thumb } from "./format";
 import { withBase } from "./paths";
 import { store } from "./store";
 import type { Series } from "./types";
@@ -18,11 +19,30 @@ interface LibraryState {
 const Ctx = createContext<LibraryState | null>(null);
 
 function fixLibrary(list: Series[]): Series[] {
-  return list.map((s) => ({
-    ...s,
-    poster: withBase(s.poster) ?? null,
-    backdrop: withBase(s.backdrop) ?? null,
-  }));
+  return list.map((s) => {
+    // Parse chapter dates once here; series.ts (unread/new counts, sorting, calendar) reads `ts`.
+    // The list is fresh JSON, so filling the field in place is safe.
+    for (const c of s.chapters) c.ts = c.date ? Date.parse(c.date) || 0 : 0;
+    return {
+      ...s,
+      // Covers go through the CDN resizer (cards ~190px wide, hero/banner full width).
+      poster: thumb(withBase(s.poster), 400) ?? null,
+      backdrop: thumb(withBase(s.backdrop), 1280) ?? null,
+    };
+  });
+}
+
+const fetchLibrary = async () => fixLibrary(await api<Series[]>("/api/library"));
+
+/** Library request started at boot (main.tsx), consumed by LibraryProvider's first refresh(). */
+let early: Promise<Series[] | null> | null = null;
+
+/** Start /api/library and the settings/progress bootstrap right away, in parallel with App's
+ *  /api/me check, instead of after it. A 401 still opens the login (api() fires LOGIN_EVENT). */
+export function preloadLibrary() {
+  if (early) return;
+  early = fetchLibrary().catch(() => null); // failed: the provider fetches again (and reports the error)
+  void store.bootstrap();
 }
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
@@ -34,7 +54,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const data = fixLibrary(await api<Series[]>("/api/library"));
+      const pre = early;
+      early = null; // only the first refresh may use the boot request; later ones refetch
+      const data = (pre && (await pre)) || (await fetchLibrary());
       ref.current = data;
       setLibrary(data);
       setError(null);
@@ -53,7 +75,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const bySlug = useCallback((slug: string | undefined) => ref.current.find((s) => s.slug === slug), []);
 
-  return <Ctx.Provider value={{ library, ready, error, refresh, bySlug, progressVersion }}>{children}</Ctx.Provider>;
+  const value = useMemo(
+    () => ({ library, ready, error, refresh, bySlug, progressVersion }),
+    [library, ready, error, refresh, bySlug, progressVersion],
+  );
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 export function useLibrary() {

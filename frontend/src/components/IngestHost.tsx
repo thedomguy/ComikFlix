@@ -23,7 +23,10 @@ function endMessage(j: LiveJob) {
   return null;
 }
 
-/** Refresh the library when a job ends, and mid-run (throttled) as chapters land. */
+/** Mid-download library refreshes at most this often (a job ending always refreshes). */
+const MID_RUN_REFRESH_MS = 20000;
+
+/** Refresh the library when a job ends, and mid-run (throttled, visible tab only) as chapters land. */
 function useJobWatcher(jobs: LiveJob[]) {
   const { refresh } = useLibrary();
   const prevRunning = useRef<Set<string> | null>(null);
@@ -43,7 +46,8 @@ function useJobWatcher(jobs: LiveJob[]) {
     }
     const ended = jobs.filter((j) => prevRunning.current!.has(j.id) && j.state !== "running");
     prevRunning.current = running;
-    if (ended.length || (done > doneSeen.current && Date.now() - lastRefresh.current > 3000)) {
+    const midRun = done > doneSeen.current && !document.hidden && Date.now() - lastRefresh.current > MID_RUN_REFRESH_MS;
+    if (ended.length || midRun) {
       doneSeen.current = done;
       lastRefresh.current = Date.now();
       void refresh();

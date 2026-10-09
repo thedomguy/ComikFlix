@@ -1,7 +1,11 @@
 // Shared per-series rules (continue target, unread counts, release forecast). Pages must use
 // these rather than re-deriving, so home, library, search and the calendar always agree.
 import { store } from "./store";
-import type { Progress, Series } from "./types";
+import type { Chapter, Progress, Series } from "./types";
+
+/** A chapter's publish time in ms (0: unknown). Uses the `ts` fixLibrary precomputed. */
+export const chapterTs = (c: Chapter | undefined): number =>
+  !c ? 0 : c.ts ?? (c.date ? Date.parse(c.date) || 0 : 0);
 
 export const progressOf = (slug: string): Progress | null => store.progress(slug) as Progress | null;
 
@@ -43,14 +47,15 @@ export function unreadCount(s: Series) {
 export function newSinceRead(s: Series) {
   const p = progressOf(s.slug);
   if (!p) return 0;
-  return s.chapters.filter((c) => c.date && Date.parse(c.date) > p.at).length;
+  let n = 0;
+  for (const c of s.chapters) if (chapterTs(c) > p.at) n++;
+  return n;
 }
 
 export const latestChapter = (s: Series) => s.chapters[s.chapters.length - 1];
 
 export function latestDate(s: Series) {
-  const d = latestChapter(s)?.date;
-  return d ? Date.parse(d) : 0;
+  return chapterTs(latestChapter(s));
 }
 
 // ---- release calendar ----
@@ -75,9 +80,8 @@ export function releaseEvents(library: Series[], from: Date, to: Date): ReleaseE
   for (const s of library) {
     const base = { slug: s.slug, title: s.title, poster: s.poster };
     for (const c of s.chapters) {
-      if (!c.date) continue;
-      const d = new Date(c.date);
-      if (d >= from && d < to) out.push({ ...base, chapter: c.id, date: d, kind: "released" });
+      const t = chapterTs(c);
+      if (t && t >= +from && t < +to) out.push({ ...base, chapter: c.id, date: new Date(t), kind: "released" });
     }
     const status = (s.status || "").toLowerCase();
     if (status && !["ongoing", "season end", "hiatus"].includes(status)) continue; // completed/dropped

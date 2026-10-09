@@ -134,22 +134,35 @@ export default function DownloadsPage() {
   useEffect(() => {
     let alive = true;
     let timer = 0;
+    let busy = false;
+    let loaded = false;
     let last: HistoryJob[] = [];
     const load = async () => {
+      clearTimeout(timer);
+      // Hidden tab: stop polling; the visibility listener below resumes it.
+      if (busy || (loaded && document.hidden)) return;
+      busy = true;
       try {
         last = await api<HistoryJob[]>("/api/downloads");
       } catch {
         /* offline: keep what we have */
       }
+      busy = false;
+      loaded = true;
       if (!alive) return;
       setJobs(last);
       // Fast while something runs; slower otherwise so new downloads (e.g. from Jarvis) still appear.
-      timer = window.setTimeout(load, last.some((j) => j.state === "running") ? POLL_MS : IDLE_POLL_MS);
+      if (!document.hidden) timer = window.setTimeout(load, last.some((j) => j.state === "running") ? POLL_MS : IDLE_POLL_MS);
     };
-    load();
+    const onVisible = () => {
+      if (!document.hidden) void load();
+    };
+    void load();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 

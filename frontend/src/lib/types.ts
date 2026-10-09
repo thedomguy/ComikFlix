@@ -3,10 +3,13 @@
 export interface Chapter {
   id: string; // chapter number as text, e.g. "52" or "12.5"
   page_count: number;
-  size: number;
-  source_url: string | null;
   date: string | null; // ISO publish date on the source
-  status: string;
+  /** ms epoch of `date` (0: none), computed once in fixLibrary (lib/library.tsx). */
+  ts?: number;
+  // No longer sent by /api/library (kept optional for older servers; don't read them).
+  size?: number;
+  source_url?: string | null;
+  status?: string;
   pages?: Page[];
 }
 

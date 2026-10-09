@@ -93,8 +93,22 @@ async function poll() {
     again = false;
     return poll();
   }
-  if (subs.size) timer = window.setTimeout(poll, jobs.some((j) => j.state === "running") ? 1500 : 10000);
+  if (subs.size) timer = window.setTimeout(poll, nextDelay());
 }
+
+const RUNNING_MS = 1500;
+const IDLE_MS = 30000;
+const IDLE_HIDDEN_MS = 60000;
+
+function nextDelay() {
+  if (jobs.some((j) => j.state === "running")) return RUNNING_MS;
+  return document.hidden ? IDLE_HIDDEN_MS : IDLE_MS;
+}
+
+// Back on the tab: catch up at once instead of waiting out a long idle delay.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && subs.size) void poll();
+});
 
 function subscribe(f: () => void) {
   subs.add(f);
@@ -105,7 +119,8 @@ function subscribe(f: () => void) {
   };
 }
 
-/** Live in-memory jobs from /api/ingest (newest first): every 1.5s while one runs, else 10s. */
+/** Live in-memory jobs from /api/ingest (newest first): every 1.5s while one runs, else 30s
+ *  (60s in a hidden tab), and right away when the tab becomes visible. */
 export function useIngestJobs(): LiveJob[] {
   return useSyncExternalStore(subscribe, () => jobs);
 }

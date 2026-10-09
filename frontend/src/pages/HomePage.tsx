@@ -35,10 +35,8 @@ function whenLabel(d: Date) {
 export default function HomePage() {
   const { library, progressVersion } = useLibrary();
 
-  const rows = useMemo(() => {
-    void progressVersion; // progress decides most rows
-    const started = library.filter((s) => progressOf(s.slug)).sort(byReadingOrder);
-    const fresh = started.filter((s) => newSinceRead(s) > 0);
+  // Library-only rows: don't rebuild these (release forecast, sorts) on every progress save.
+  const libRows = useMemo(() => {
     const now = new Date();
     // One card per series: its earliest upcoming release this week.
     const week = new Map<string, ReleaseEvent>();
@@ -47,8 +45,17 @@ export default function HomePage() {
     }
     const recent = [...library].sort((a, b) => latestDate(b) - latestDate(a)).slice(0, 20);
     const genres = [...new Set(library.flatMap((s) => s.genres))].sort();
-    return { started, fresh, week: [...week.values()], recent, genres };
-  }, [library, progressVersion]);
+    const byGenre = new Map(genres.map((g) => [g, library.filter((s) => s.genres.includes(g))]));
+    const bySlug = new Map(library.map((s) => [s.slug, s]));
+    return { week: [...week.values()], recent, genres, byGenre, bySlug };
+  }, [library]);
+
+  const rows = useMemo(() => {
+    void progressVersion; // progress decides these rows
+    const started = library.filter((s) => progressOf(s.slug)).sort(byReadingOrder);
+    const fresh = started.filter((s) => newSinceRead(s) > 0);
+    return { ...libRows, started, fresh };
+  }, [library, libRows, progressVersion]);
 
   if (!library.length) {
     return (
@@ -63,7 +70,7 @@ export default function HomePage() {
 
   const hero = rows.started[0] || library[0];
   const r = resumeTarget(hero);
-  const bySlug = new Map(library.map((s) => [s.slug, s]));
+  const { bySlug } = rows;
 
   return (
     <main className="home">
@@ -128,11 +135,9 @@ export default function HomePage() {
         </Row>
         {rows.genres.map((g) => (
           <Row key={g} title={g} link={{ href: `#/library?genre=${encodeURIComponent(g)}`, label: "See all →" }}>
-            {library
-              .filter((s) => s.genres.includes(g))
-              .map((s) => (
-                <SeriesCard key={s.slug} s={s} />
-              ))}
+            {(rows.byGenre.get(g) || []).map((s) => (
+              <SeriesCard key={s.slug} s={s} />
+            ))}
           </Row>
         ))}
       </div>

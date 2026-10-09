@@ -223,6 +223,7 @@ function ChapterList({ s, progressVersion }: { s: Series; progressVersion: numbe
   }, [s, query, newest, progressVersion]);
 
   const p = progressOf(s.slug);
+  const read = useMemo(() => new Set(p?.read || []), [p]); // O(1) per row (saves replace `p`)
   return (
     <>
       <div className="chhead">
@@ -250,11 +251,10 @@ function ChapterList({ s, progressVersion }: { s: Series; progressVersion: numbe
       <ul className="chapters">
         {rows.length ? (
           rows.map((c) => {
-            const done = !!p?.read?.includes(c.id);
+            const done = read.has(c.id);
             const cur = p?.chapter === c.id && !done;
-            const meta = [`${c.page_count || c.pages?.length || 0} pages`, c.size ? fmtSize(c.size) : null, c.date ? fmtDate(c.date) : ""]
-              .filter(Boolean)
-              .join(" · ");
+            const date = c.date ? fmtDate(c.date) : "";
+            const meta = `${c.page_count || c.pages?.length || 0} pages${date ? ` · ${date}` : ""}`;
             return (
               <li key={c.id} onClick={() => (location.hash = `#/read/${s.slug}/${c.id}`)}>
                 <div className="num">{c.id}</div>
