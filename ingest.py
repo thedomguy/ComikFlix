@@ -327,6 +327,13 @@ def ingest_chapter_metadata(
     pages_meta = asura.extract_pages(asura.fetch_html(url, timeout=timeout))
     if not pages_meta:
         raise RuntimeError("no reader pages found on chapter page")
+    # Asura's chapter list says how many pages there are; never mark a partial capture ready.
+    listed = db.get_conn().execute(
+        "SELECT page_count FROM chapters WHERE series_slug=? AND chapter_id=?",
+        (slug, str(chapter)),
+    ).fetchone()
+    if listed and listed["page_count"] and len(pages_meta) < int(listed["page_count"]):
+        raise RuntimeError(f"captured {len(pages_meta)} of {listed['page_count']} pages listed by Asura")
 
     pages = []
     for p in pages_meta:

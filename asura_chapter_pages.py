@@ -9,7 +9,7 @@ Usage:
 
 Fetches the chapter HTML (SSR), finds reader imgs under
 div.select-none > div[max-w…] > div[data-page] > img[data-page-index]
-with src on cdn.asurascans.com (*.webp), and prints JSON.
+with src on cdn.asurascans.com (webp, or jpg/png on older re-uploads), and prints JSON.
 Does not download image binaries.
 """
 
@@ -35,8 +35,8 @@ CDN_HOST = "cdn.asurascans.com"
 USER_AGENT = http_util.USER_AGENT
 
 # Matching ignores ?v=; full src is kept in output.
-CDN_WEBP_RE = re.compile(
-    r"^https?://cdn\.asurascans\.com/.+\.webp(?:\?.*)?$",
+CDN_IMG_RE = re.compile(
+    r"^https?://cdn\.asurascans\.com/.+\.(?:webp|jpe?g|png|gif|avif)(?:\?.*)?$",
     re.IGNORECASE,
 )
 
@@ -109,7 +109,7 @@ class ReaderPageParser(HTMLParser):
             and attrs.get("data-page-index") is not None
         ):
             src = attrs.get("src") or ""
-            if CDN_WEBP_RE.match(src):
+            if CDN_IMG_RE.match(src):
                 try:
                     page_index = int(attrs["data-page-index"])  # type: ignore[arg-type]
                 except (TypeError, ValueError):
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Extract AsuraScans chapter reader image URLs (JSON only; "
-            "does not download webp binaries)."
+            "does not download image binaries)."
         )
     )
     parser.add_argument(
