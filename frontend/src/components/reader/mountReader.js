@@ -183,7 +183,9 @@ export function mountReader(root, s, chap) {
         );
       }
     };
-    img.src = attempt ? `${box._pg.src}?r=${attempt}` : box._pg.src;
+    if (box._n <= 2) img.fetchPriority = "high";
+    const src = box._pg.src;
+    img.src = attempt ? `${src}${src.includes("?") ? "&" : "?"}r=${attempt}` : src;
     box._img = img;
     box.append(img);
   }
@@ -239,6 +241,25 @@ export function mountReader(root, s, chap) {
       store.setAutoScroll({ speed, slug: s.slug, chapterId: chap.id });
     },
   });
+  const nudgeSpeed = (d) => {
+    speed = Math.max(10, Math.min(1000, speed + d));
+    speedSlider.value = String(speed);
+    speedVal.textContent = `${speed} px/s`;
+    store.setAutoScroll({ speed, slug: s.slug, chapterId: chap.id });
+    notifyState();
+  };
+  const stepBtnStyle = {
+    flex: "0 0 auto", width: "34px", height: "34px", borderRadius: "8px",
+    background: "#2a2a2a", color: "var(--fg)", fontSize: "18px", fontWeight: "700", lineHeight: "1",
+  };
+  const speedRow = h(
+    "div",
+    { style: { display: "flex", alignItems: "center", gap: "8px" } },
+    h("button", { type: "button", style: stepBtnStyle, title: "Slower", "aria-label": "Slower", onclick: () => nudgeSpeed(-10) }, "−"),
+    h("div", { style: { flex: "1", minWidth: "0", display: "flex" } }, speedSlider),
+    h("button", { type: "button", style: stepBtnStyle, title: "Faster", "aria-label": "Faster", onclick: () => nudgeSpeed(10) }, "+")
+  );
+  speedSlider.style.width = "100%";
 
   const morePanel = h(
     "div",
@@ -246,7 +267,7 @@ export function mountReader(root, s, chap) {
     h("label", {}, "Page width"),
     widthSlider,
     h("label", { style: { marginTop: "12px" } }, "Auto-scroll speed ", speedVal),
-    speedSlider,
+    speedRow,
     h("label", { style: { marginTop: "12px" } }, "Save speed for"),
     persistSel
   );

@@ -4,6 +4,7 @@
 // the server only gets it on view changes and a heartbeat, so the screen list stays fresh.
 import { withBase } from "./paths";
 import { newPeer, gathered, signal } from "./rtc";
+import { getRemoteTarget } from "./remoteTarget";
 
 const ID_KEY = "comicflix-screen-id";
 const HEARTBEAT_MS = 20000; // remotes treat a screen silent for ~60s as gone
@@ -185,7 +186,8 @@ function disconnect() {
  *  open stream eats one of the browser's ~6 connections per host). A tab acting as a
  *  remote is not itself a screen. */
 function sync() {
-  if (location.hash.startsWith("#/remote") || document.visibilityState !== "visible") disconnect();
+  // In remote mode this tab is a controller (even while browsing), never a screen.
+  if (location.hash.startsWith("#/remote") || getRemoteTarget() || document.visibilityState !== "visible") disconnect();
   else {
     connect();
     notifyState();
@@ -196,5 +198,6 @@ export function initScreen(libraryGetter) {
   getLibrary = libraryGetter;
   window.addEventListener("hashchange", sync);
   document.addEventListener("visibilitychange", sync);
+  window.addEventListener("comikflix:remote-target", sync);
   sync();
 }

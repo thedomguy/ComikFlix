@@ -8,6 +8,8 @@ import { Toast } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TabBar } from "./components/TabBar";
 import { MobileTitle } from "./components/MobileTitle";
+import RemoteBanner from "./components/RemoteBanner";
+import { sendRemote, useRemoteTarget } from "./lib/remoteTarget";
 import IngestHost from "./components/IngestHost";
 import HomePage from "./pages/HomePage";
 import LibraryPage from "./pages/LibraryPage";
@@ -114,6 +116,16 @@ function Shell() {
     window.scrollTo(0, scrolls.current.get(key) ?? 0);
   }, [key]);
 
+  // Remote mode: opening a chapter plays it on the controlled screen instead of here,
+  // then shows the remote controls (so the normal app is the remote's browser).
+  const target = useRemoteTarget();
+  const castRead = route.view === "read" && !!target;
+  useEffect(() => {
+    if (!castRead || !target) return;
+    sendRemote(target.id, { type: "go", hash: location.hash });
+    location.replace(`#/remote/${target.id}`);
+  }, [castRead, target, key]);
+
   const tabs = mobile && route.view !== "read" && route.view !== "remote";
   useEffect(() => {
     document.body.classList.toggle("has-tabs", tabs);
@@ -127,7 +139,8 @@ function Shell() {
   const fullscreen = view === "read" || view === "remote" || (view === "series" && mobile);
 
   let page;
-  if (view === "read" && series) page = <ReaderPage key={`${series.slug}/${parts[1]}`} slug={series.slug} chapter={parts[1]} />;
+  if (castRead) page = null;
+  else if (view === "read" && series) page = <ReaderPage key={`${series.slug}/${parts[1]}`} slug={series.slug} chapter={parts[1]} />;
   else if (view === "remote") page = <RemotePage key={parts[0] || "list"} screen={parts[0]} />;
   else if (view === "series" && series && mobile) page = <SeriesPage slug={series.slug} mode="page" />;
   else if (view === "series" && series)
@@ -152,6 +165,7 @@ function Shell() {
           {page}
         </div>
       </ErrorBoundary>
+      {target && view !== "remote" && view !== "read" && <RemoteBanner />}
       {tabs && <TabBar route={route} onAdd={() => setAddOpen(true)} />}
       <IngestHost addOpen={addOpen} onCloseAdd={() => setAddOpen(false)} />
     </>
