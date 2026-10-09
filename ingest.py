@@ -218,21 +218,8 @@ def _upload_cover(client: r2.R2Client, slug: str, cover_url: str) -> tuple[str, 
         return key, url
 
 
-def _asura_cdn_slug(slug: str) -> str:
-    return re.sub(r"-[0-9a-f]{8}$", "", slug)
-
-
 def _chapter_source_url(slug: str, chapter: str) -> str:
     return CHAPTER_URL.format(slug=slug, chapter=chapter)
-
-
-def _page_cdn_url(slug: str, chapter: str, page_index: int, src: str | None = None) -> str:
-    if src and str(src).startswith("http"):
-        return src
-    return (
-        f"https://cdn.asurascans.com/asura-images/chapters/"
-        f"{_asura_cdn_slug(slug)}/{chapter}/{int(page_index) + 1:03d}.webp"
-    )
 
 
 def save_series_info(
@@ -274,7 +261,8 @@ def save_series_info(
 
 
 def _sync_chapter_metadata(info: dict, *, overwrite: bool = False) -> None:
-    """Upsert chapter rows (source_url, dates, page stubs with CDN urls)."""
+    """Upsert chapter rows (source_url, dates, page count). Page URLs are only ever written
+    from a chapter's scraped reader page (ingest_chapter_metadata), never guessed."""
     slug = info["slug"]
     for c in info.get("chapters") or []:
         number = c.get("number")
@@ -305,44 +293,6 @@ def _sync_chapter_metadata(info: dict, *, overwrite: bool = False) -> None:
             page_count=page_count,
             status=status,
         )
-
-        # Ensure unprocessed chapters have CDN page rows so the reader can render.
-        existing_pages = db.list_pages(slug, chapter_id)
-        if existing_pages:
-            # Backfill missing cdn_url / keep existing r2 fields untouched.
-            pages = []
-            changed = False
-            for pg in existing_pages:
-                cdn = pg["cdn_url"] if "cdn_url" in pg.keys() else None
-                if not cdn:
-                    cdn = _page_cdn_url(slug, chapter_id, pg["page_index"])
-                    changed = True
-                pages.append({
-                    "page_index": pg["page_index"],
-                    "r2_key": pg["r2_key"],
-                    "public_url": pg["public_url"],
-                    "cdn_url": cdn,
-                    "aspect_ratio": pg["aspect_ratio"],
-                    "alt": pg["alt"],
-                })
-            if changed:
-                db_ingest.replace_pages(slug, chapter_id, pages)
-        elif page_count and page_count > 0:
-            db_ingest.replace_pages(
-                slug,
-                chapter_id,
-                [
-                    {
-                        "page_index": i,
-                        "r2_key": None,
-                        "public_url": None,
-                        "cdn_url": _page_cdn_url(slug, chapter_id, i),
-                        "aspect_ratio": None,
-                        "alt": None,
-                    }
-                    for i in range(page_count)
-                ],
-            )
 
 
 # --------------------------------------------------------------------------- chapters
@@ -386,7 +336,7 @@ def ingest_chapter_metadata(
             "page_index": page_index,
             "r2_key": None,
             "public_url": None,
-            "cdn_url": _page_cdn_url(slug, str(chapter), page_index, p.get("src")),
+            "cdn_url": p["src"],  # extract_pages only returns pages with a CDN src
             "aspect_ratio": aspect,
             "alt": p.get("alt"),
         })

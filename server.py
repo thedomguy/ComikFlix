@@ -53,30 +53,11 @@ def title_from_slug(slug: str) -> str:
     return slug.replace("-", " ").title()
 
 
-def _asura_cdn_slug(series_slug: str) -> str:
-    """Asura CDN folder is usually the slug without the trailing 8-hex id."""
-    return re.sub(r"-[0-9a-f]{8}$", "", series_slug)
-
-
-def _synthesize_asura_cdn(series_slug: str, chapter_id: str, page_index: int) -> str:
-    """Best-effort Asura image URL when manifests omitted the original src."""
-    page_num = int(page_index) + 1
-    return (
-        f"https://cdn.asurascans.com/asura-images/chapters/"
-        f"{_asura_cdn_slug(series_slug)}/{chapter_id}/{page_num:03d}.webp"
-    )
-
-
-def _page_src(
-    series_slug: str,
-    chapter_id: str,
-    page_index: int,
-    cdn_url: str | None = None,
-) -> str | None:
-    """Always render Asura CDN for now (ignore R2/local binaries)."""
+def _page_src(cdn_url: str | None) -> str | None:
+    """Scraped Asura CDN url only (R2/local binaries ignored for now; nothing is guessed)."""
     if cdn_url and str(cdn_url).startswith("http"):
         return cdn_url
-    return _synthesize_asura_cdn(series_slug, chapter_id, page_index)
+    return None
 
 
 def _cover_urls(row) -> tuple[str | None, str | None]:
@@ -102,7 +83,7 @@ def _pages_payload(slug: str, chapter_id: str) -> list[dict]:
     for pg in db.list_pages(slug, chapter_id):
         keys = pg.keys()
         cdn = pg["cdn_url"] if "cdn_url" in keys else None
-        src = _page_src(slug, chapter_id, pg["page_index"], cdn)
+        src = _page_src(cdn)
         if not src:
             continue
         aspect = pg["aspect_ratio"]
@@ -130,9 +111,7 @@ def _chapter_page_count(slug: str, ch) -> int:
 
 def _first_page_src(slug: str, chapter_id: str) -> str | None:
     pg = db.first_page(slug, chapter_id)
-    if pg is None:
-        return _synthesize_asura_cdn(slug, chapter_id, 0)
-    return _page_src(slug, chapter_id, pg["page_index"], pg["cdn_url"])
+    return _page_src(pg["cdn_url"]) if pg else None
 
 
 def scan_library() -> list[dict]:
@@ -165,6 +144,7 @@ def scan_library() -> list[dict]:
         backdrop = _first_page_src(slug, first["id"])
         if not poster:
             poster = backdrop
+        backdrop = backdrop or poster
 
         remote = _json_field(row["remote_chapters_json"])
         release = _json_field(row["release_json"])
@@ -262,9 +242,8 @@ _scrape_locks_guard = threading.Lock()
 
 
 def _ensure_scraped(slug: str, chapter_id: str) -> None:
-    """Chapters never ingested only have page stubs with guessed NNN.webp names, and Asura
-    sometimes uses other names (e.g. 426b34.webp), so those pages 404. Scrape the real URLs
-    the first time such a chapter is opened; on failure keep the stubs."""
+    """Chapters outside an ingest's range (or whose ingest failed / was cancelled) have no
+    page URLs yet: capture them from the chapter's reader page the first time it's opened."""
     with _scrape_locks_guard:
         lock = _scrape_locks.setdefault((slug, chapter_id), threading.Lock())
     with lock:
@@ -277,7 +256,7 @@ def _ensure_scraped(slug: str, chapter_id: str) -> None:
         try:
             ingest.ingest_chapter_metadata(slug, chapter_id, timeout=10)
         except Exception as e:
-            print(f"[reader] could not scrape {slug} ch{chapter_id}, using guessed urls: {e}")
+            print(f"[reader] could not scrape {slug} ch{chapter_id}: {e}")
 
 
 def get_chapter(slug: str, chapter_id: str) -> dict | None:

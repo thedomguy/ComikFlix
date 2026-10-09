@@ -2,8 +2,8 @@
 """One-shot import of downloads/*/series.json + chapter manifests into SQLite.
 
 Does not delete or modify downloads/. Pages without R2 stay public_url=NULL and
-chapter status='missing'; cdn_url is filled from manifest src (or synthesized
-Asura CDN path) so the reader can render unprocessed chapters remotely.
+chapter status='missing'; cdn_url comes from the manifest's scraped src only (pages
+without one are left out; the reader captures them when the chapter is opened).
 
 Usage:
     .venv/bin/python migrate_from_downloads.py [--db PATH] [--downloads PATH]
@@ -86,42 +86,18 @@ def import_series(series_dir: Path) -> dict:
             except OSError:
                 pass
 
-        # Manifest pages preferred; else invent rows from on-disk images (no R2 yet).
-        man_pages = manifest.get("pages") or []
+        # Only pages whose scraped src the manifest recorded; a partial set is dropped whole.
+        man_pages = [pg for pg in manifest.get("pages") or [] if pg.get("page_index") is not None]
         pages: list[dict] = []
-        cdn_slug = re.sub(r"-[0-9a-f]{8}$", "", slug)
-        if man_pages:
+        if man_pages and all(pg.get("src") for pg in man_pages):
             for pg in man_pages:
-                idx = pg.get("page_index")
-                if idx is None:
-                    continue
-                idx = int(idx)
-                cdn = pg.get("src")
-                if not cdn:
-                    cdn = (
-                        f"https://cdn.asurascans.com/asura-images/chapters/"
-                        f"{cdn_slug}/{chapter_id}/{idx + 1:03d}.webp"
-                    )
                 pages.append({
-                    "page_index": idx,
+                    "page_index": int(pg["page_index"]),
                     "r2_key": None,
                     "public_url": None,
-                    "cdn_url": cdn,
+                    "cdn_url": pg["src"],
                     "aspect_ratio": pg.get("aspect_ratio"),
                     "alt": pg.get("alt"),
-                })
-        else:
-            for i, _img in enumerate(images):
-                pages.append({
-                    "page_index": i,
-                    "r2_key": None,
-                    "public_url": None,
-                    "cdn_url": (
-                        f"https://cdn.asurascans.com/asura-images/chapters/"
-                        f"{cdn_slug}/{chapter_id}/{i + 1:03d}.webp"
-                    ),
-                    "aspect_ratio": None,
-                    "alt": None,
                 })
 
         page_count = manifest.get("page_count") or len(pages) or len(images) or None
