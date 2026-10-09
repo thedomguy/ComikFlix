@@ -35,6 +35,25 @@ DEFAULT_SETTINGS = {
 _local = threading.local()
 _db_path: Path | None = None
 _init_lock = threading.Lock()
+# init_schema runs once per process (per DB path), not on every new connection: the server
+# opens a fresh connection per request thread.
+_schema_ready = False
+_schema_lock = threading.Lock()
+
+# Bumped after every committed write to series/chapters/pages, so readers (the /api/library
+# cache in server.py) can tell in-process changes apart without querying the DB.
+_write_version = 0
+_version_lock = threading.Lock()
+
+
+def bump() -> None:
+    global _write_version
+    with _version_lock:
+        _write_version += 1
+
+
+def write_version() -> int:
+    return _write_version
 
 
 def db_path() -> Path:
@@ -47,8 +66,10 @@ def db_path() -> Path:
 
 def set_db_path(path: Path | str | None) -> None:
     """Override DB path (tests / CLI). Pass None to reset to env/default."""
-    global _db_path
+    global _db_path, _schema_ready
     _db_path = Path(path) if path else None
+    _schema_ready = False
+    bump()
     conn = getattr(_local, "conn", None)
     if conn is not None:
         conn.close()
@@ -76,9 +97,21 @@ def get_conn() -> sqlite3.Connection:
             conn = getattr(_local, "conn", None)
             if conn is None:
                 conn = _connect()
-                init_schema(conn)
+                try:
+                    _ensure_schema_once(conn)
+                except Exception:
+                    conn.close()
+                    raise
                 _local.conn = conn
     return conn
+
+
+def _ensure_schema_once(conn: sqlite3.Connection) -> None:
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if not _schema_ready:
+            init_schema(conn)  # sets _schema_ready
 
 
 def close_thread_conn() -> None:
@@ -219,10 +252,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def init_schema(conn: sqlite3.Connection | None = None) -> None:
+    global _schema_ready
     c = conn or get_conn()
     c.executescript(SCHEMA_SQL)
     _ensure_columns(c)
     c.commit()
+    _schema_ready = True
 
 
 def _dumps(obj: Any) -> str | None:
@@ -460,6 +495,7 @@ def upsert_series(row: dict) -> None:
                 row.get("updated_at") or now,
             ),
         )
+    bump()
 
 
 def upsert_chapter(row: dict) -> None:
@@ -486,6 +522,7 @@ def upsert_chapter(row: dict) -> None:
                 row.get("size_bytes"),
             ),
         )
+    bump()
 
 
 def replace_pages(series_slug: str, chapter_id: str, pages: list[dict]) -> None:
@@ -516,6 +553,7 @@ def replace_pages(series_slug: str, chapter_id: str, pages: list[dict]) -> None:
                 for p in pages
             ],
         )
+    bump()
 
 
 def set_page_cdn_url(series_slug: str, chapter_id: str, page_index: int, cdn_url: str | None) -> None:
@@ -527,6 +565,7 @@ def set_page_cdn_url(series_slug: str, chapter_id: str, page_index: int, cdn_url
             """,
             (cdn_url, series_slug, str(chapter_id), int(page_index)),
         )
+    bump()
 
 
 def patch_series(slug: str, fields: dict) -> dict | None:
@@ -548,8 +587,10 @@ def patch_series(slug: str, fields: dict) -> dict | None:
             f"UPDATE series SET {sets} WHERE slug = ?",
             (*allowed.values(), slug),
         )
-        if cur.rowcount == 0:
-            return None
+        updated = cur.rowcount > 0
+    if not updated:
+        return None
+    bump()
     return {"slug": slug, **{k: allowed[k] for k in allowed if k != "updated_at"}}
 
 
@@ -571,6 +612,15 @@ def list_pages(series_slug: str, chapter_id: str) -> list[sqlite3.Row]:
         "SELECT * FROM pages WHERE series_slug = ? AND chapter_id = ? ORDER BY page_index",
         (series_slug, str(chapter_id)),
     ).fetchall()
+
+
+def first_page(series_slug: str, chapter_id: str) -> sqlite3.Row | None:
+    """Lowest-index page of a chapter (served by the pages primary key), or None."""
+    return get_conn().execute(
+        "SELECT page_index, cdn_url FROM pages WHERE series_slug = ? AND chapter_id = ? "
+        "ORDER BY page_index LIMIT 1",
+        (series_slug, str(chapter_id)),
+    ).fetchone()
 
 
 def series_count() -> int:

@@ -13,6 +13,8 @@ The "Add Comic" / "Update" buttons run ingest.py in the background.
 """
 import argparse
 import getpass
+import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -127,33 +129,32 @@ def _chapter_page_count(slug: str, ch) -> int:
 
 
 def _first_page_src(slug: str, chapter_id: str) -> str | None:
-    pages = db.list_pages(slug, chapter_id)
-    if not pages:
+    pg = db.first_page(slug, chapter_id)
+    if pg is None:
         return _synthesize_asura_cdn(slug, chapter_id, 0)
-    pg = pages[0]
-    keys = pg.keys()
-    cdn = pg["cdn_url"] if "cdn_url" in keys else None
-    return _page_src(slug, chapter_id, pg["page_index"], cdn)
+    return _page_src(slug, chapter_id, pg["page_index"], pg["cdn_url"])
 
 
 def scan_library() -> list[dict]:
-    """Thin library index: series + chapter metadata, no page URL arrays."""
-    db.init_schema()
+    """Thin library index: series + chapter metadata, no page URL arrays.
+
+    Chapter entries carry only what the clients use (id, page_count, date); the reader
+    gets everything else per chapter from /api/series/<slug>/chapters/<id>."""
     series_list = []
     for row in db.list_series_rows():
         slug = row["slug"]
         chapters_out = []
+        first_source_url = None
         for ch in db.list_chapters(slug):
             page_count = _chapter_page_count(slug, ch)
             if page_count <= 0:
                 continue
+            if not chapters_out:
+                first_source_url = ch["source_url"]
             chapters_out.append({
                 "id": ch["chapter_id"],
                 "page_count": page_count,
-                "size": 0,  # binaries not served locally/R2 while on CDN-only mode
-                "source_url": ch["source_url"],
                 "date": ch["published_at"],
-                "status": ch["status"],
             })
         if not chapters_out:
             continue
@@ -184,7 +185,7 @@ def scan_library() -> list[dict]:
             "next_release": release,
             "release_date": row["release_date"],
             "remote_total": len(remote) if isinstance(remote, list) else None,
-            "source_url": row["source_url"] or first.get("source_url"),
+            "source_url": row["source_url"] or first_source_url,
             "poster": poster,
             "backdrop": backdrop,
             "size": 0,
@@ -194,9 +195,70 @@ def scan_library() -> list[dict]:
     return series_list
 
 
+# /api/library is built once per DB state and served from memory (raw + gzip + ETag).
+_library_lock = threading.Lock()
+_library_cache: dict = {}
+
+
+def _library_fingerprint() -> tuple:
+    """Cheap state key: in-process write counter plus aggregates that also move when another
+    process (sync_library.py, ingest.py CLI) writes to the DB."""
+    conn = db.get_conn()
+    version = db.write_version()  # read before the aggregates: a later write forces a rebuild
+    s = conn.execute("SELECT MAX(updated_at), COUNT(*) FROM series").fetchone()
+    c = conn.execute("SELECT COUNT(*), TOTAL(page_count), MAX(published_at) FROM chapters").fetchone()
+    return (version, s[0], s[1], c[0], c[1], c[2])
+
+
+def library_response() -> dict:
+    """{"body": bytes, "gzip": bytes, "etag": str} for the current library."""
+    with _library_lock:
+        key = _library_fingerprint()
+        if _library_cache.get("key") != key:
+            body = json.dumps(scan_library(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            _library_cache.update(
+                key=key,
+                body=body,
+                gzip=gzip.compress(body, compresslevel=6, mtime=0),
+                etag='W/"%s"' % hashlib.sha1(body).hexdigest()[:20],
+            )
+        return dict(_library_cache)
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """If-None-Match uses weak comparison."""
+    if not header:
+        return False
+    want = etag[2:] if etag.startswith("W/") else etag
+    for tag in header.split(","):
+        tag = tag.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag == want:
+            return True
+    return False
+
+
+def _accepts_gzip(header: str | None) -> bool:
+    for part in (header or "").split(","):
+        name, _, params = part.partition(";")
+        if name.strip().lower() != "gzip":
+            continue
+        for param in params.split(";"):
+            k, _, v = param.partition("=")
+            if k.strip().lower() == "q":
+                try:
+                    return float(v) > 0
+                except ValueError:
+                    return False
+        return True
+    return False
+
+
 def get_chapter(slug: str, chapter_id: str) -> dict | None:
     """Full chapter payload including page srcs (loaded when opening the reader)."""
-    db.init_schema()
     ch = db.get_conn().execute(
         "SELECT * FROM chapters WHERE series_slug = ? AND chapter_id = ?",
         (slug, str(chapter_id)),
@@ -246,6 +308,31 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_library(self) -> None:
+        """GET /api/library from the in-memory cache: 304 on a matching ETag, else the
+        pre-gzipped (or raw) body. no-cache (not no-store) so the browser revalidates."""
+        lib = library_response()
+        etag = lib["etag"]
+        if _etag_matches(self.headers.get("If-None-Match"), etag):
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "private, no-cache")
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            return
+        use_gzip = _accepts_gzip(self.headers.get("Accept-Encoding"))
+        body = lib["gzip"] if use_gzip else lib["body"]
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "private, no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -471,7 +558,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self.send_json({"error": f"Could not read the Asura catalogue: {e}"}, HTTPStatus.BAD_GATEWAY)
         if path == "/api/library":
-            return self.send_json(scan_library())
+            return self.send_library()
         if path == "/api/settings":
             return self.send_json(db.get_settings())
         if path == "/api/progress":
@@ -606,16 +693,41 @@ class Handler(SimpleHTTPRequestHandler):
             return
         super().do_HEAD()
 
+    # Track per response whether the handler already set Cache-Control, so end_headers only
+    # adds a default instead of stacking a second, conflicting one.
+    _cache_control_sent = False
+    _response_code = 0
+
+    def send_response_only(self, code, message=None):
+        self._cache_control_sent = False
+        self._response_code = int(code)
+        super().send_response_only(code, message)
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == "cache-control":
+            self._cache_control_sent = True
+        super().send_header(keyword, value)
+
+    def _default_cache_control(self, path: str) -> str | None:
+        if path.startswith(r2.PROXY_PREFIX):
+            return None  # _send_r2_object sets its own; errors stay as before
+        if self._response_code not in (HTTPStatus.OK, HTTPStatus.PARTIAL_CONTENT, HTTPStatus.NOT_MODIFIED):
+            return "no-cache"  # never let a 404/redirect be cached long-term
+        if path.startswith("/media/"):
+            return "public, max-age=86400"
+        if path.startswith("/assets/") and WEB.name == "web-dist":
+            return "public, max-age=31536000, immutable"  # Vite content-hashed file names
+        if path.startswith("/icons/"):
+            return "public, max-age=604800"
+        return "no-cache"  # index.html, sw.js, manifest, API responses without their own
+
     def end_headers(self):
-        path = self.path.split("?", 1)[0]
-        if path.startswith("/media/") or path.startswith(r2.PROXY_PREFIX):
-            # /api/r2/ sets Cache-Control in _send_r2_object; /media/ uses day cache.
-            if path.startswith("/media/"):
-                self.send_header("Cache-Control", "public, max-age=86400")
-        elif path.endswith((".js", ".css", ".webmanifest", "/sw.js")) or path == "/sw.js":
-            self.send_header("Cache-Control", "no-cache")
-        else:
-            self.send_header("Cache-Control", "no-cache")
+        if not self._cache_control_sent:
+            path = (getattr(self, "path", "") or "").split("?", 1)[0]
+            value = self._default_cache_control(path)
+            if value:
+                self.send_header("Cache-Control", value)
+        self._cache_control_sent = False
         # Omit Service-Worker-Allowed: / so a subpath deploy (e.g. /readers/)
         # cannot claim the whole host via the service worker.
         super().end_headers()
@@ -647,6 +759,15 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=str(HERE)))
     url = f"http://{args.host}:{args.port}/"
     print(f"Serving library from {db.db_path()}  media={DOWNLOADS}  at {url}  (Ctrl+C to stop)")
+
+    def warm_catalog() -> None:
+        # Fill ingest's 6h Asura catalogue cache so the first "Add Comic" search is instant.
+        try:
+            ingest.catalog_search("a")
+        except Exception as e:
+            print(f"Asura catalogue warm-up failed: {e}")
+
+    threading.Thread(target=warm_catalog, name="catalog-warm", daemon=True).start()
     if not args.no_open:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:
