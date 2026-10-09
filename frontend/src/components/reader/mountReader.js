@@ -197,20 +197,26 @@ export function mountReader(root, s, chap) {
       box.classList.remove("failed");
       updateProgress();
     };
+    const src = box._pg.src;
+    const url = attempt ? `${src}${src.includes("?") ? "&" : "?"}r=${attempt}` : src;
     img.onerror = () => {
+      // A replaced/unloaded image (its src was removed) must not touch the box any more.
+      if (box._img !== img) return;
       box._img = null;
       img.remove();
       if (attempt < 3) setTimeout(() => { if (box._want) loadPage(box, attempt + 1); }, 800 * (attempt + 1));
       else {
         box.classList.add("failed");
+        // Keep the URL visible (and in the DOM) so a failure can be checked by hand.
+        box.dataset.src = url;
         box.replaceChildren(
-          h("button", { class: "retry", onclick: () => { box.replaceChildren(); loadPage(box); } }, `Page ${box._n} failed to load. Click to retry`)
+          h("button", { class: "retry", title: url, onclick: () => { box.replaceChildren(); loadPage(box); } }, `Page ${box._n} failed to load. Click to retry`),
+          h("a", { class: "retry-src", href: url, target: "_blank", rel: "noopener noreferrer" }, url)
         );
       }
     };
     if (box._n <= 2) img.fetchPriority = "high";
-    const src = box._pg.src;
-    img.src = attempt ? `${src}${src.includes("?") ? "&" : "?"}r=${attempt}` : src;
+    img.src = url;
     box._img = img;
     box.append(img);
   }

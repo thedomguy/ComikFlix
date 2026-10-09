@@ -257,6 +257,29 @@ def _accepts_gzip(header: str | None) -> bool:
     return False
 
 
+_scrape_locks: dict[tuple[str, str], threading.Lock] = {}
+_scrape_locks_guard = threading.Lock()
+
+
+def _ensure_scraped(slug: str, chapter_id: str) -> None:
+    """Chapters never ingested only have page stubs with guessed NNN.webp names, and Asura
+    sometimes uses other names (e.g. 426b34.webp), so those pages 404. Scrape the real URLs
+    the first time such a chapter is opened; on failure keep the stubs."""
+    with _scrape_locks_guard:
+        lock = _scrape_locks.setdefault((slug, chapter_id), threading.Lock())
+    with lock:
+        row = db.get_conn().execute(
+            "SELECT status FROM chapters WHERE series_slug = ? AND chapter_id = ?",
+            (slug, chapter_id),
+        ).fetchone()
+        if not row or row["status"] == "ready":
+            return
+        try:
+            ingest.ingest_chapter_metadata(slug, chapter_id, timeout=10)
+        except Exception as e:
+            print(f"[reader] could not scrape {slug} ch{chapter_id}, using guessed urls: {e}")
+
+
 def get_chapter(slug: str, chapter_id: str) -> dict | None:
     """Full chapter payload including page srcs (loaded when opening the reader)."""
     ch = db.get_conn().execute(
@@ -265,6 +288,12 @@ def get_chapter(slug: str, chapter_id: str) -> dict | None:
     ).fetchone()
     if not ch:
         return None
+    if ch["status"] != "ready":
+        _ensure_scraped(slug, str(chapter_id))
+        ch = db.get_conn().execute(
+            "SELECT * FROM chapters WHERE series_slug = ? AND chapter_id = ?",
+            (slug, str(chapter_id)),
+        ).fetchone()
     pages = _pages_payload(slug, str(chapter_id))
     if not pages:
         return None

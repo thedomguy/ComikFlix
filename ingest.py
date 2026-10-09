@@ -367,13 +367,14 @@ def ingest_chapter_metadata(
     chapter: str,
     progress=None,
     published_at: str | None = None,
+    timeout: float = 30.0,
 ) -> int:
     """Fetch chapter HTML and record Asura CDN page URLs in SQLite (no download/R2).
 
     Returns page count. Raises on failure.
     """
     url = CHAPTER_URL.format(slug=slug, chapter=chapter)
-    pages_meta = asura.extract_pages(asura.fetch_html(url))
+    pages_meta = asura.extract_pages(asura.fetch_html(url, timeout=timeout))
     if not pages_meta:
         raise RuntimeError("no reader pages found on chapter page")
 
