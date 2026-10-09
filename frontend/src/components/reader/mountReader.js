@@ -65,7 +65,6 @@ export function mountReader(root, s, chap) {
 
   let scrollingProgrammatically = false;
   let ignoreScrollUntil = 0;
-  let lastY = 0;
   let timer = null;
   let autoPlaying = false;
   let raf = 0;
@@ -180,7 +179,6 @@ export function mountReader(root, s, chap) {
     ignoreScrollUntil = performance.now() + 400;
     setChromeAway(true);
     scrollPos = body.scrollTop;
-    lastY = body.scrollTop;
     lastTs = 0;
     raf = requestAnimationFrame(autoTick);
     notifyState();
@@ -471,7 +469,6 @@ export function mountReader(root, s, chap) {
   const frac0 =
     saved && saved.chapter === chap.id && saved.frac > 0 && !alreadyDone ? Math.min(saved.frac, 0.99) : 0;
   body.scrollTop = 0;
-  lastY = 0;
   updateProgress();
   // Open at the top and offer the saved spot instead of jumping there silently.
   if (frac0) {
@@ -481,16 +478,16 @@ export function mountReader(root, s, chap) {
 
   const onScroll = () => {
     const y = body.scrollTop;
-    if (!scrollingProgrammatically) scrollPos = y;
     const f = frac();
     updateProgress();
     const ignore = scrollingProgrammatically || performance.now() < ignoreScrollUntil;
     // Reading on from the top means the resume offer was declined.
     if (resumeAt && !ignore && y > 200) dismissResume();
-    if (!ignore) {
-      if (autoPlaying && Math.abs(y - lastY) > 2) stopAutoplay();
-    }
-    lastY = y;
+    // Scroll events land a frame after autoTick writes scrollTop, so the flag above has
+    // already been cleared by then. Our own ticks leave the pane at scrollPos; anything
+    // else is the reader scrolling, which takes over from auto-scroll.
+    if (autoPlaying && !ignore && Math.abs(y - scrollPos) > 4) stopAutoplay();
+    if (!autoPlaying || ignore) scrollPos = y;
     morePanel.classList.add("hidden");
     clearTimeout(timer);
     timer = setTimeout(() => persistProgress(f), 250);
