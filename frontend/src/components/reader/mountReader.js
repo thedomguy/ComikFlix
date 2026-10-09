@@ -15,6 +15,32 @@ function homeIcon() {
   return svg;
 }
 
+const FS_ENTER =
+  '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+const FS_EXIT =
+  '<path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+
+function fsIcon(paths) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = paths;
+  return svg;
+}
+
+// iPhone Safari has no element fullscreen; the button is left out there.
+const fsSupported = () => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+
+function toggleFullscreen() {
+  const d = document.documentElement;
+  if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+  else {
+    const req = d.requestFullscreen || d.webkitRequestFullscreen;
+    Promise.resolve(req?.call(d, { navigationUI: "hide" })).catch(() => {});
+  }
+}
+
 const PEEK_FRAC = 0.05; // read this far into a chapter before it becomes your current one
 
 /** @param {HTMLElement} root  @param {any} s series  @param {any} chap chapter with pages
@@ -100,6 +126,7 @@ export function mountReader(root, s, chap) {
     chrome.classList.toggle("away", away);
     foot.classList.toggle("away", away);
     playBtn.classList.toggle("away", away);
+    fsBtn?.classList.toggle("away", away);
   }
 
   function toggleChrome() {
@@ -363,6 +390,27 @@ export function mountReader(root, s, chap) {
     "▶"
   );
 
+  // Sits under the play button and shows/hides with it.
+  const fsBtn = fsSupported()
+    ? h("button", {
+        class: "fullscreen-btn",
+        onclick: (e) => {
+          e.stopPropagation();
+          toggleFullscreen();
+        },
+      })
+    : null;
+  function syncFullscreen() {
+    if (!fsBtn) return;
+    const on = !!fsElement();
+    fsBtn.classList.toggle("on", on);
+    fsBtn.title = on ? "Exit full screen" : "Full screen";
+    fsBtn.setAttribute("aria-label", fsBtn.title);
+    fsBtn.setAttribute("aria-pressed", String(on));
+    fsBtn.replaceChildren(fsIcon(on ? FS_EXIT : FS_ENTER));
+  }
+  syncFullscreen();
+
   const nextBtn = next
     ? h("button", { class: "btn play", onclick: () => go(next) }, "Next Chapter ›")
     : null;
@@ -379,7 +427,7 @@ export function mountReader(root, s, chap) {
   );
 
   body.append(strip, end);
-  root.replaceChildren(chrome, body, foot, resumeToast, playBtn);
+  root.replaceChildren(chrome, body, foot, resumeToast, playBtn, fsBtn || "");
   setChromeAway(true);
   document.body.style.overflow = "hidden";
 
@@ -456,11 +504,11 @@ export function mountReader(root, s, chap) {
     else if (e.key === " " || e.key === "Spacebar") {
       e.preventDefault();
       toggleAutoplay();
-    }
+    } else if ((e.key === "f" || e.key === "F") && fsBtn && !e.metaKey && !e.ctrlKey && !e.altKey) toggleFullscreen();
   };
   // click (not pointerup) so the end of a touch scroll or drag never counts as a tap
   const onTap = (e) => {
-    if (e.target.closest(".rbar, .reader-foot, .resume-toast, .endcard, .autoplay-btn, button, select, input, a")) return;
+    if (e.target.closest(".rbar, .reader-foot, .resume-toast, .endcard, .autoplay-btn, .fullscreen-btn, button, select, input, a")) return;
     toggleChrome();
   };
 
@@ -468,6 +516,8 @@ export function mountReader(root, s, chap) {
     if (!e.target.closest(".more-wrap")) morePanel.classList.add("hidden");
   };
   body.addEventListener("scroll", onScroll, { passive: true });
+  document.addEventListener("fullscreenchange", syncFullscreen);
+  document.addEventListener("webkitfullscreenchange", syncFullscreen);
   body.addEventListener("click", onTap);
   window.addEventListener("keydown", onKey);
   document.addEventListener("click", onDocClick);
@@ -601,6 +651,10 @@ export function mountReader(root, s, chap) {
     body.removeEventListener("scroll", onScroll);
     body.removeEventListener("click", onTap);
     window.removeEventListener("keydown", onKey);
+    document.removeEventListener("fullscreenchange", syncFullscreen);
+    document.removeEventListener("webkitfullscreenchange", syncFullscreen);
+    // Leaving the reader leaves full screen too.
+    if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
     document.removeEventListener("click", onDocClick);
     root.replaceChildren();
     root.style.removeProperty("--sbw");

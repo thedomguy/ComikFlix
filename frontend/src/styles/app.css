@@ -398,6 +398,19 @@ html.boot-read .reader.hidden { display: block !important; }
 .autoplay-btn.on { background: var(--accent); color: #111; }
 .autoplay-btn:hover { background: #3a3a3a; }
 .autoplay-btn.on:hover { background: #e03545; color: #fff; }
+/* Full screen toggle: same pill as play, stacked just below it. */
+.fullscreen-btn {
+  position: fixed; right: max(16px, var(--safe-right)); top: calc(50% + 32px);
+  z-index: 41; width: 48px; height: 48px; border-radius: 50%; border: 0;
+  background: rgba(20, 20, 20, .85); color: var(--fg);
+  box-shadow: 0 4px 16px rgba(0,0,0,.45); backdrop-filter: blur(8px);
+  display: grid; place-items: center; transition: opacity .25s, transform .25s;
+}
+.fullscreen-btn svg { width: 22px; height: 22px; }
+.fullscreen-btn.away { opacity: 0; pointer-events: none; transform: translateX(12px); }
+.fullscreen-btn.on { background: var(--accent); color: #111; }
+.fullscreen-btn:hover { background: #3a3a3a; }
+.fullscreen-btn.on:hover { background: #e03545; color: #fff; }
 .strip { margin: 0 auto; max-width: 100%; padding-top: 0; }
 /* Default aspect keeps scroll height honest before images load (progress/endcard). */
 .strip .pg { display: block; width: 100%; background: #161616; aspect-ratio: 2 / 3; }
