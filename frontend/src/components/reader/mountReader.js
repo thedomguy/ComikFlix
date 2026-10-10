@@ -28,9 +28,14 @@ function fsIcon(paths) {
   return svg;
 }
 
-// iPhone Safari has no element fullscreen; the button is left out there.
-const fsSupported = () => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
 const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+// iPhone Safari has no element fullscreen, and the installed app already runs full screen
+// (manifest display), so the button is left out in both. Full screen belongs to the
+// document, not the reader: it carries across chapter switches and the rest of the app
+// until toggled off here or by the system back gesture.
+const fsSupported = () =>
+  !!(document.fullscreenEnabled || document.webkitFullscreenEnabled) &&
+  (!!fsElement() || !matchMedia("(display-mode: fullscreen)").matches);
 
 function toggleFullscreen() {
   const d = document.documentElement;
@@ -656,8 +661,6 @@ export function mountReader(root, s, chap) {
     window.removeEventListener("keydown", onKey);
     document.removeEventListener("fullscreenchange", syncFullscreen);
     document.removeEventListener("webkitfullscreenchange", syncFullscreen);
-    // Leaving the reader leaves full screen too.
-    if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
     document.removeEventListener("click", onDocClick);
     root.replaceChildren();
     root.style.removeProperty("--sbw");
