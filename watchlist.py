@@ -301,7 +301,8 @@ def to_api(row, lib_index: dict[str, dict], progress: dict[str, dict]) -> dict:
         "status": row["status"],
         "rating": row["rating"] / 2 if row["rating"] else None,
         "notes": row["notes"],
-        "source": row["source"],
+        "source": row["source"],  # asura: linked to a series (library or source); manual: by hand
+        "site": ("mgeko" if slug.startswith("mgeko-") else "asura") if slug else None,
         "asura_slug": slug,
         "in_library": bool(lib),
         **{k: meta[k] for k in ("source_url", "cover_url", "series_status", "type", "author", "artist",
