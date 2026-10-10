@@ -234,6 +234,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_agent TEXT
 );
 
+-- the user's watch list (watchlist.py): their status/rating/notes plus a metadata copy
+CREATE TABLE IF NOT EXISTS watchlist (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,              -- the user's: reading | plan | completed
+    rating INTEGER,                    -- half-stars 1-10; NULL: unrated
+    notes TEXT,
+    source TEXT NOT NULL,              -- asura | manual (more providers later)
+    source_id TEXT,                    -- asura: series slug
+    source_url TEXT,
+    cover_url TEXT,
+    series_status TEXT,                -- the series': ongoing | hiatus | completed | dropped | NULL
+    type TEXT,
+    author TEXT,
+    artist TEXT,
+    description TEXT,
+    genres_json TEXT,
+    alt_titles_json TEXT,
+    chapters_total INTEGER,            -- chapters out on the source, when known
+    metadata_at TEXT,                  -- last metadata copy/refresh
+    status_at TEXT NOT NULL,           -- last change of the user's status
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (source, source_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_chapters_series ON chapters(series_slug);
 CREATE INDEX IF NOT EXISTS idx_pages_chapter ON pages(series_slug, chapter_id);
 """
@@ -643,6 +669,9 @@ def move_series(old: str, new: str) -> None:
             }
             conn.execute("UPDATE settings SET value_json = ? WHERE key = 'autoScroll'", (_dumps(a),))
 
+        import watchlist  # imports db; deferred to avoid the cycle
+
+        watchlist.move(conn, old, new)
         conn.execute("DELETE FROM series WHERE slug = ?", (old,))  # cascades to its chapters/pages
     bump()
 

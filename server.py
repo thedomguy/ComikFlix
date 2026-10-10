@@ -34,6 +34,7 @@ import db
 import ingest
 import r2
 import remote
+import watchlist
 
 HERE = Path(__file__).resolve().parent
 # The React app (frontend/, `npm run build`) builds into web-dist/.
@@ -193,14 +194,21 @@ def library_response() -> dict:
     with _library_lock:
         key = _library_fingerprint()
         if _library_cache.get("key") != key:
-            body = json.dumps(scan_library(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            data = scan_library()
+            body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             _library_cache.update(
                 key=key,
+                data=data,  # read-only: shared by every request that reads the library
                 body=body,
                 gzip=gzip.compress(body, compresslevel=6, mtime=0),
                 etag='W/"%s"' % hashlib.sha1(body).hexdigest()[:20],
             )
         return dict(_library_cache)
+
+
+def library_list() -> list[dict]:
+    """The current library as data (shared cache; don't mutate)."""
+    return library_response()["data"]
 
 
 def _etag_matches(header: str | None, etag: str) -> bool:
@@ -562,6 +570,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": f"Could not read the Asura catalogue: {e}"}, HTTPStatus.BAD_GATEWAY)
         if path == "/api/library":
             return self.send_library()
+        if path == "/api/watchlist" or path.startswith("/api/watchlist/"):
+            return self.watchlist_route("GET", path, None)
         if path == "/api/settings":
             return self.send_json(db.get_settings())
         if path == "/api/progress":
@@ -615,6 +625,8 @@ class Handler(SimpleHTTPRequestHandler):
         data = self._require_json_mutation()
         if data is None:
             return
+        if path.startswith("/api/watchlist/"):
+            return self.watchlist_route("PATCH", path, data)
         parts = path.split("/")
         if len(parts) == 4 and parts[:3] == ["", "api", "series"]:
             slug = unquote(parts[3])
@@ -654,6 +666,8 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 ok = isinstance(data.get("cmd"), dict) and remote.send_command(sid, data["cmd"])
             return self.send_json({"ok": ok}, HTTPStatus.OK if ok else HTTPStatus.NOT_FOUND)
+        if path == "/api/watchlist" or path.startswith("/api/watchlist/"):
+            return self.watchlist_route("POST", path, data)
         if path == "/api/ingest":
             latest = data.get("latest")
             try:
@@ -684,6 +698,48 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError as e:
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self):
+        path = self.path.split("?", 1)[0]
+        if self.blocked(path):
+            return
+        if not self.same_origin():
+            return self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+        if path.startswith("/api/watchlist/"):
+            return self.watchlist_route("DELETE", path, None)
+        self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def watchlist_route(self, method: str, path: str, data: dict | None) -> None:
+        """/api/watchlist           GET list, POST add
+        /api/watchlist/<id>         GET, PATCH, DELETE
+        /api/watchlist/<id>/refresh POST: re-read an Asura entry's metadata"""
+        parts = path.rstrip("/").split("/")[3:]
+        entry_id = unquote(parts[0]) if parts else None
+        action = parts[1] if len(parts) > 1 else None
+        if len(parts) > 2 or (action and (method, action) != ("POST", "refresh")):
+            return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        try:
+            lib, prog = library_list(), db.get_progress()
+            if entry_id is None and method == "GET":
+                watchlist.refresh_stale(lib)  # background; series status changes reach the list
+                return self.send_json(watchlist.list_entries(lib, prog))
+            if entry_id is None and method == "POST":
+                return self.send_json(watchlist.add_entry(data, lib, prog), HTTPStatus.CREATED)
+            if entry_id is None:
+                return self.send_json({"error": "method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            if action == "refresh":
+                return self.send_json(watchlist.refresh_entry(entry_id, lib, prog))
+            if method == "GET":
+                return self.send_json(watchlist.get_entry(entry_id, lib, prog))
+            if method == "PATCH":
+                return self.send_json(watchlist.update_entry(entry_id, data, lib, prog))
+            if method == "DELETE":
+                if not watchlist.remove_entry(entry_id):
+                    return self.send_json({"error": "no watch list entry with that id"}, HTTPStatus.NOT_FOUND)
+                return self.send_json({"ok": True})
+            return self.send_json({"error": "method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+        except watchlist.WatchlistError as e:
+            return self.send_json({"error": str(e), **e.extra}, e.status)
 
     def finish(self):
         try:
