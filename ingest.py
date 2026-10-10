@@ -37,6 +37,7 @@ import asura_chapter_pages as asura
 import db
 import db_ingest
 import download
+import imgsize
 import mgeko
 import optimize_images
 import r2
@@ -244,7 +245,10 @@ def _chapter_source_url(slug: str, chapter: str) -> str:
 
 def _extract_pages(slug: str, url: str, timeout: float = 30.0) -> list[dict]:
     page = asura.fetch_html(url, timeout=timeout)
-    return mgeko.extract_pages(page) if mgeko.is_mgeko(slug) else asura.extract_pages(page)
+    pages = mgeko.extract_pages(page) if mgeko.is_mgeko(slug) else asura.extract_pages(page)
+    # Sources that don't print page sizes (mgeko) get them read from the image headers.
+    imgsize.fill_aspects(pages)
+    return pages
 
 
 def save_series_info(

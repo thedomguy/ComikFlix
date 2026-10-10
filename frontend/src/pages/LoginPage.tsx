@@ -12,7 +12,9 @@ export default function LoginPage({ pinLength }: { pinLength: number }) {
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
-  useEffect(() => input.current?.focus(), []);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
 
   async function submit(value: string) {
     setErr("");

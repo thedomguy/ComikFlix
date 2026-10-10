@@ -22,25 +22,34 @@ export function totalPages(s: Series) {
   return s.page_total ?? s.chapters.reduce((n, c) => n + (c.page_count || 0), 0);
 }
 
-/** Which chapter "Read"/"Continue" opens: the next one once the current is finished. */
+/** Every chapter the source lists, added or not ("Click to add"), by number. */
+export function listedIds(s: Series): string[] {
+  return [...s.chapters.map((c) => c.id), ...(s.pending || []).map((c) => c.id)].sort(
+    (a, b) => parseFloat(a) - parseFloat(b)
+  );
+}
+
+/** Which chapter "Read"/"Continue" opens: the next one once the current is finished. Works by
+ *  chapter number over everything listed, so a place on (or a next chapter that is) a chapter
+ *  never added still resolves; the reader adds such a chapter when it opens it. */
 export function resumeTarget(s: Series): { chapter: string; label: "Read" | "Continue" } {
   const p = progressOf(s.slug);
   if (!p) return { chapter: s.chapters[0].id, label: "Read" };
-  const idx = s.chapters.findIndex((c) => c.id === p.chapter);
-  if (idx >= 0 && (p.read || []).includes(p.chapter) && idx < s.chapters.length - 1) {
-    return { chapter: s.chapters[idx + 1].id, label: "Continue" };
-  }
-  return { chapter: p.chapter, label: "Continue" };
+  if (!(p.read || []).includes(p.chapter)) return { chapter: p.chapter, label: "Continue" };
+  const at = parseFloat(p.chapter);
+  const after = listedIds(s).find((id) => parseFloat(id) > at);
+  return { chapter: after ?? p.chapter, label: "Continue" };
 }
 
-/** Chapters after where the user is (the current one counts while unfinished).
- *  Never-started series: every chapter. */
+/** Chapters after where the user is (the current one counts while unfinished), added or not.
+ *  Never-started series: every added chapter. */
 export function unreadCount(s: Series) {
   const p = progressOf(s.slug);
   if (!p) return s.chapters.length;
-  const idx = s.chapters.findIndex((c) => c.id === p.chapter);
-  if (idx < 0) return s.chapters.length;
-  return s.chapters.length - idx - ((p.read || []).includes(p.chapter) ? 1 : 0);
+  const at = parseFloat(p.chapter);
+  if (Number.isNaN(at)) return s.chapters.length;
+  const done = (p.read || []).includes(p.chapter);
+  return listedIds(s).filter((id) => parseFloat(id) > at || (id === p.chapter && !done)).length;
 }
 
 /** Chapters published after the user last read this series (0 if never started). */

@@ -54,7 +54,9 @@ export default function SearchPage({ q: initial }: { q: string }) {
   const input = useRef<HTMLInputElement>(null);
   const query = q.trim();
 
-  useEffect(() => input.current?.focus(), []);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
   useEffect(() => {
     history.replaceState(null, "", query ? `#/search?q=${encodeURIComponent(query)}` : "#/search");
     setActive(0);

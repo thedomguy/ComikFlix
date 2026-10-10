@@ -23,6 +23,9 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
   const latest = useRef(bySlug);
   latest.current = bySlug;
   const [retried, setRetried] = useState(false);
+  // A chapter the source lists but that was never added ("Click to add"), opened from
+  // Continue, Next or a remote: add it first, then open it.
+  const [adding, setAdding] = useState<"no" | "busy" | "done" | "failed">("no");
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -43,6 +46,20 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
         refresh().finally(() => setRetried(true));
         return;
       }
+      if (adding === "no" && (fresh || series)?.pending?.some((c) => c.id === chapter)) {
+        setAdding("busy");
+        api(`/api/series/${encodeURIComponent(slug)}/chapters/${encodeURIComponent(chapter)}/add`, {
+          method: "POST",
+          json: {},
+        })
+          .then(() => refresh())
+          .then(
+            () => setAdding("done"),
+            () => setAdding("failed")
+          );
+        return;
+      }
+      if (adding === "busy" || adding === "failed") return;
       location.hash = series ? `#/series/${series.slug}` : "#/";
       return;
     }
@@ -64,7 +81,7 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
     return () => {
       alive = false;
     };
-  }, [series, slug, chapter, retried]);
+  }, [series, slug, chapter, retried, adding]);
 
   // Layout effect: the reader's cleanup measures the scroll pane to save progress, which
   // only works while its DOM is still attached.
@@ -75,7 +92,10 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
 
   return (
     <div className="reader" ref={root}>
-      {load.state === "loading" && <div className="empty">Loading chapter…</div>}
+      {load.state === "loading" && adding !== "failed" && (
+        <div className="empty">{adding === "busy" ? `Adding chapter ${chapter}…` : "Loading chapter…"}</div>
+      )}
+      {adding === "failed" && <div className="empty">Could not add chapter {chapter}.</div>}
       {load.state === "error" && <div className="empty">Could not load chapter.</div>}
     </div>
   );

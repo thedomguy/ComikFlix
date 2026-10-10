@@ -55,13 +55,20 @@ const PEEK_FRAC = 0.05; // read this far into a chapter before it becomes your c
 /** @param {HTMLElement} root  @param {any} s series  @param {any} chap chapter with pages
  *  @returns {() => void} cleanup */
 export function mountReader(root, s, chap) {
-  const idx = s.chapters.findIndex((c) => c.id === chap.id);
-  const prev = s.chapters[idx - 1];
-  const next = s.chapters[idx + 1];
+  // Neighbours by chapter number across everything the source lists, added or not.
+  // Next may be a chapter that was never added ("Click to add"): the reader adds it on
+  // opening, so reading on never skips chapters. Prev only goes to added chapters; when the
+  // one before isn't added, Prev stays live and says so instead of going anywhere.
+  const listed = [
+    ...s.chapters.map((c) => ({ id: c.id, added: true })),
+    ...(s.pending || []).map((c) => ({ id: c.id, added: false })),
+  ].sort((a, b) => parseFloat(a.id) - parseFloat(b.id));
+  const idx = listed.findIndex((c) => c.id === chap.id);
+  const before = listed[idx - 1];
+  const prev = before?.added ? before : null;
+  const next = listed[idx + 1];
   const go = (c) => (location.hash = `#/read/${s.slug}/${c.id}`);
-  // Earlier chapters the source lists but that were never added ("Click to add" on the
-  // series page): Prev stays live and says so instead of going anywhere.
-  const olderToAdd = !prev && (s.pending || []).some((c) => parseFloat(c.id) < parseFloat(chap.id));
+  const olderToAdd = !!before && !before.added;
   const notice = h("div", { class: "reader-notice", role: "status" }, "Last chapter added");
   let noticeTimer = 0;
   const showNotice = () => {
@@ -74,12 +81,16 @@ export function mountReader(root, s, chap) {
   const goPrev = () => (prev ? go(prev) : olderToAdd && showNotice());
   const chapterOf = (id) => s.chapters.find((c) => c.id === id);
 
+  // A page's box takes its real size up front when the source gave one; otherwise it holds a
+  // guess (2:3, then the first loaded page's shape) until its own image loads.
   const pageEls = chap.pages.map((pg, i) => {
     const box = h("div", { class: "pg", style: pg.aspect ? { aspectRatio: pg.aspect } : null });
     box._pg = pg;
     box._n = i + 1;
+    box._known = !!pg.aspect;
     return box;
   });
+  let guessed = false;
   const strip = h("div", { class: "strip" }, pageEls);
   strip.style.maxWidth = store.readerWidth + "px";
 
@@ -93,6 +104,7 @@ export function mountReader(root, s, chap) {
   let speed = store.autoScrollSpeed(s.slug, chap.id);
   let chapterComplete = false;
   let resumeAt = 0; // saved fraction offered via the resume toast; 0 once taken/dismissed
+  let settle = null; // { f, until }: a resume jump kept in place while pages around it load
   // Already the series' current chapter? Then every save counts (see persistProgress).
   let committed = store.progress(s.slug)?.chapter === chap.id;
 
@@ -119,15 +131,36 @@ export function mountReader(root, s, chap) {
     return Math.max(1, Math.min(max, y));
   }
 
-  function frac() {
-    if (chapterComplete) return 1;
+  /** Where the view is now (the bar, the remote): goes back down when you scroll up. */
+  function scrollFrac() {
     const at = completeAt();
     if (at <= 0) return 0;
     return Math.min(1, Math.max(0, body.scrollTop / at));
   }
 
+  /** What gets saved: a finished chapter stays finished even if you scroll back up. */
+  function frac() {
+    return chapterComplete ? 1 : scrollFrac();
+  }
+
   function updateProgress() {
-    progressFill.style.width = `${frac() * 100}%`;
+    progressFill.style.width = `${scrollFrac() * 100}%`;
+  }
+
+  function endInView() {
+    const r = endMarker.getBoundingClientRect();
+    const b = body.getBoundingClientRect();
+    return r.height > 0 && Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top) >= r.height * 0.5;
+  }
+
+  // Finished = the end card is in view. Not while the last page still has a guessed size:
+  // with unknown page sizes the end card can show up before the pages above it grow.
+  function maybeComplete() {
+    if (chapterComplete || !pageEls[pageEls.length - 1]?._known || !endInView()) return;
+    chapterComplete = true;
+    updateProgress();
+    persistProgress(1);
+    renderWatchSuggestion();
   }
 
   function persistProgress(f = frac()) {
@@ -213,9 +246,19 @@ export function mountReader(root, s, chap) {
     if (box._img) return;
     const img = h("img", { alt: `Page ${box._n}`, decoding: "async" });
     img.onload = () => {
-      box.style.aspectRatio = `${img.naturalWidth}/${img.naturalHeight}`;
+      const ratio = `${img.naturalWidth}/${img.naturalHeight}`;
+      box.style.aspectRatio = ratio;
+      box._known = true;
       box.classList.remove("failed");
+      // No sizes from the source: pages of a chapter are mostly alike, so the first one
+      // that loads is a far better guess for the rest than 2:3.
+      if (!guessed) {
+        guessed = true;
+        for (const b of pageEls) if (!b._known) b.style.aspectRatio = ratio;
+      }
+      if (settle && performance.now() < settle.until) applyResume(settle.f);
       updateProgress();
+      maybeComplete();
     };
     const src = box._pg.src;
     const url = attempt ? `${src}${src.includes("?") ? "&" : "?"}r=${attempt}` : src;
@@ -226,6 +269,7 @@ export function mountReader(root, s, chap) {
       img.remove();
       if (attempt < 3) setTimeout(() => { if (box._want) loadPage(box, attempt + 1); }, 800 * (attempt + 1));
       else {
+        box._known = true; // shown as a fixed-size retry box
         box.classList.add("failed");
         // Keep the URL visible (and in the DOM) so a failure can be checked by hand.
         box.dataset.src = url;
@@ -381,21 +425,25 @@ export function mountReader(root, s, chap) {
     resumeToast.classList.add("hidden");
   }
 
+  function applyResume(f) {
+    const at = completeAt();
+    if (at > 0) {
+      ignoreScrollUntil = performance.now() + 300;
+      body.scrollTop = f * at;
+    }
+    updateProgress();
+  }
+
   function jumpToResume() {
     const f = resumeAt;
     dismissResume();
-    const apply = () => {
-      const at = completeAt();
-      if (at > 0) {
-        ignoreScrollUntil = performance.now() + 300;
-        body.scrollTop = f * at;
-      }
-      updateProgress();
-    };
-    apply();
-    // Pages near the target load and resize after the jump; settle once more.
-    requestAnimationFrame(apply);
+    applyResume(f);
+    // Pages around the target load and resize after the jump: hold the spot while they do,
+    // until the reader touches the page.
+    settle = { f, until: performance.now() + 4000 };
+    requestAnimationFrame(() => settle && applyResume(f));
   }
+  const stopSettle = () => (settle = null);
 
   // progress sits below the bar so it stays visible when the bar slides away
   chrome.append(bar, progressTrack);
@@ -505,16 +553,10 @@ export function mountReader(root, s, chap) {
   );
   pageEls.forEach((b) => loader.observe(b));
 
-  const endWatcher = new IntersectionObserver(
-    ([e]) => {
-      if (!e?.isIntersecting || chapterComplete) return;
-      chapterComplete = true;
-      updateProgress();
-      persistProgress(1);
-      renderWatchSuggestion();
-    },
-    { root: body, threshold: 0.5 }
-  );
+  const endWatcher = new IntersectionObserver(([e]) => e?.isIntersecting && maybeComplete(), {
+    root: body,
+    threshold: 0.5,
+  });
   endWatcher.observe(endMarker);
 
   const saved = store.progress(s.slug);
@@ -547,6 +589,7 @@ export function mountReader(root, s, chap) {
     notifyState();
   };
   const onKey = (e) => {
+    stopSettle();
     if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
     if (e.key === "Escape") location.hash = `#/series/${s.slug}`;
     else if (e.key === "ArrowRight" && next) go(next);
@@ -566,6 +609,7 @@ export function mountReader(root, s, chap) {
     if (!e.target.closest(".more-wrap")) morePanel.classList.add("hidden");
   };
   body.addEventListener("scroll", onScroll, { passive: true });
+  for (const ev of ["pointerdown", "wheel", "touchstart"]) body.addEventListener(ev, stopSettle, { passive: true });
   document.addEventListener("fullscreenchange", syncFullscreen);
   document.addEventListener("webkitfullscreenchange", syncFullscreen);
   body.addEventListener("click", onTap);
@@ -633,7 +677,7 @@ export function mountReader(root, s, chap) {
     state: () => {
       const i = currentPage();
       return {
-        frac: frac(),
+        frac: scrollFrac(),
         page: i + 1,
         pages: pageEls.length,
         pageSrc: pageEls[i]?._pg.src || null,
@@ -645,6 +689,7 @@ export function mountReader(root, s, chap) {
     },
     handle: (cmd) => {
       const vh = body.clientHeight;
+      if (cmd.type !== "speed") stopSettle();
       switch (cmd.type) {
         case "scroll": // dy in viewport heights (positive = further down)
           stopFling();
@@ -700,6 +745,7 @@ export function mountReader(root, s, chap) {
     persistProgress();
     store.flush();
     body.removeEventListener("scroll", onScroll);
+    for (const ev of ["pointerdown", "wheel", "touchstart"]) body.removeEventListener(ev, stopSettle);
     body.removeEventListener("click", onTap);
     window.removeEventListener("keydown", onKey);
     document.removeEventListener("fullscreenchange", syncFullscreen);

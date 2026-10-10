@@ -166,7 +166,11 @@ export default function DownloadsPage() {
     };
   }, []);
 
-  useEffect(() => scrollTo(0, 0), []);
+  // A block, not `() => scrollTo(0, 0)`: Chrome's scrollTo returns a Promise, and React
+  // would call whatever an effect returns as its cleanup ("A is not a function").
+  useEffect(() => {
+    scrollTo(0, 0);
+  }, []);
 
   const lib = useMemo(() => new Set(library.map((s) => s.slug)), [library]);
   const list = jobs || [];
