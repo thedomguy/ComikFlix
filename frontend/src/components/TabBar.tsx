@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Route } from "../lib/route";
-import { IconCalendar, IconDownload, IconHome, IconLibrary, IconRemote, IconSearch } from "./icons";
+import { IconCalendar, IconDownload, IconHome, IconLibrary, IconList, IconRemote, IconSearch } from "./icons";
 import { InstallButton } from "./InstallButton";
 
 const IconMore = () => (
@@ -19,6 +19,7 @@ const IconPlus = () => (
 const TABS = [
   { view: "", hash: "#/", label: "Home", icon: <IconHome /> },
   { view: "library", hash: "#/library", label: "Library", icon: <IconLibrary /> },
+  { view: "list", hash: "#/list", label: "My List", icon: <IconList /> },
   { view: "search", hash: "#/search", label: "Search", icon: <IconSearch /> },
   { view: "calendar", hash: "#/calendar", label: "Calendar", icon: <IconCalendar /> },
 ];

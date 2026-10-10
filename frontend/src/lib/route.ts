@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 /** Hash routes (kept from the original app; Jarvis and the remote send these):
  *  #/  #/library  #/search?q=  #/calendar[/YYYY-MM]  #/series/<slug>  #/read/<slug>/<chapter>
- *  #/remote[/<screenId>]  #/downloads */
+ *  #/remote[/<screenId>]  #/downloads  #/list[/<entryId>|/new][?status=&sort=] */
 export interface Route {
   view: string; // "" (home), "library", "search", "calendar", "series", "read", "remote", "downloads"
   parts: string[]; // path segments after the view, decoded

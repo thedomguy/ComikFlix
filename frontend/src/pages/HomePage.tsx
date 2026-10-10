@@ -3,6 +3,8 @@ import { bg, fmtSize } from "../lib/format";
 import { useLibrary } from "../lib/library";
 import { byReadingOrder, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
 import { SeriesCard } from "../components/SeriesCard";
+import { WatchCard } from "../components/watchlist/WatchCard";
+import { useWatchlist } from "../lib/watchlist";
 import "../styles/home.css";
 
 const DAY = 86400000;
@@ -34,6 +36,7 @@ function whenLabel(d: Date) {
 /** #/ — hero (most recently read) and rows built for a growing library. */
 export default function HomePage() {
   const { library, progressVersion } = useLibrary();
+  const { entries } = useWatchlist();
 
   // Library-only rows: don't rebuild these (release forecast, sorts) on every progress save.
   const libRows = useMemo(() => {
@@ -56,6 +59,15 @@ export default function HomePage() {
     const fresh = started.filter((s) => newSinceRead(s) > 0);
     return { ...libRows, started, fresh };
   }, [library, libRows, progressVersion]);
+
+  // Watch list "Reading": what the user says they're reading, downloaded or not.
+  const reading = useMemo(() => {
+    const bySlug = new Map(library.map((s) => [s.slug, s]));
+    return entries
+      .filter((e) => e.status === "reading")
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .map((e) => ({ e, s: e.in_library && e.asura_slug ? bySlug.get(e.asura_slug) : undefined }));
+  }, [entries, library]);
 
   if (!library.length) {
     return (
@@ -99,6 +111,11 @@ export default function HomePage() {
             {rows.started.map((s) => (
               <SeriesCard key={s.slug} s={s} />
             ))}
+          </Row>
+        )}
+        {reading.length > 0 && (
+          <Row title="Your Watch List · Reading" link={{ href: "#/list?status=reading", label: "Watch List →" }}>
+            {reading.map(({ e, s }) => (s ? <SeriesCard key={e.id} s={s} /> : <WatchCard key={e.id} e={e} />))}
           </Row>
         )}
         {rows.fresh.length > 0 && (

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { go, useRoute } from "../lib/route";
-import { IconCalendar, IconDownload, IconLibrary, IconRemote, IconSearch } from "./icons";
+import { IconCalendar, IconDownload, IconLibrary, IconList, IconRemote, IconSearch } from "./icons";
 import { InstallButton } from "./InstallButton";
 
 /** Top bar on browse pages (hidden in the reader, remote, and the mobile series page).
@@ -27,6 +27,7 @@ export function Nav({ onAdd }: { onAdd: () => void }) {
       <div className="nav-links">
         <a className={`navtext${route.view === "" ? " on" : ""}`} href="#/">Home</a>
         <a className={`navtext${route.view === "library" ? " on" : ""}`} href="#/library">Library</a>
+        <a className={`navtext${route.view === "list" ? " on" : ""}`} href="#/list">Watch List</a>
         <a className={`navtext${route.view === "calendar" ? " on" : ""}`} href="#/calendar">Calendar</a>
       </div>
       <div className="nav-right">
@@ -35,6 +36,7 @@ export function Nav({ onAdd }: { onAdd: () => void }) {
         </button>
         <span className="nav-mobile-only">
           {link("#/library", "library", "Library", <IconLibrary />)}
+          {link("#/list", "list", "Watch List", <IconList />)}
           {link("#/calendar", "calendar", "Calendar", <IconCalendar />)}
         </span>
         {link("#/downloads", "downloads", "Downloads", <IconDownload />)}

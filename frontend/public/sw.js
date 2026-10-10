@@ -1,5 +1,5 @@
 /* Comicflix service worker (React build). Nothing is precached by name except the shell.
-   - Shell (navigations), manifest, /api/library: network-first (cache = offline fallback, so a
+   - Shell (navigations), manifest, /api/library, /api/watchlist: network-first (cache = offline fallback, so a
      deploy shows up on a normal reload).
    - /assets/ (content-hashed) and /icons/: cache-first. After each fresh shell, cached assets
      that the new HTML (or the JS/CSS it loads) no longer references are dropped.
@@ -97,7 +97,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
   const path = url.pathname.slice(BASE.length) || "/";
-  if (path === "/api/library") return event.respondWith(networkFirst(event.request));
+  if (path === "/api/library" || path === "/api/watchlist") return event.respondWith(networkFirst(event.request));
   if (path.startsWith("/api/r2/")) return event.respondWith(cacheFirst(event.request));
   if (path.startsWith("/api/")) return; // live data: never cached
   if (path.startsWith("/assets/") || path.startsWith("/icons/")) return event.respondWith(cacheFirst(event.request));

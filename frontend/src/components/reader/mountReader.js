@@ -5,6 +5,8 @@
 import { h, bg } from "../../lib/dom";
 import { store } from "../../lib/store";
 import { setReaderBridge, notifyState } from "../../lib/screen";
+import { toast } from "../../lib/toast";
+import { STATUS_LABEL, entryForSlug, suggestFor, updateEntry } from "../../lib/watchlist";
 
 function homeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -426,11 +428,37 @@ export function mountReader(root, s, chap) {
   const allBtn = h("button", { class: "btn info", onclick: () => (location.hash = `#/series/${s.slug}`) }, "All Chapters");
   // Completion marker: Next Chapter play button when present, else All Chapters.
   const endMarker = nextBtn || allBtn;
+  // Watch list nudge once the chapter is done: e.g. "You've read every chapter · Move to Completed".
+  const wlSlot = h("div", { class: "wl-endcard" });
+  function renderWatchSuggestion() {
+    const entry = entryForSlug(s.slug);
+    const sg = entry && suggestFor(entry, s);
+    if (!sg) return wlSlot.replaceChildren();
+    const btn = h(
+      "button",
+      {
+        class: "btn info",
+        onclick: async () => {
+          btn.disabled = true;
+          try {
+            await updateEntry(entry.id, { status: sg.status });
+            wlSlot.replaceChildren(h("p", {}, `Moved to ${STATUS_LABEL[sg.status]} on your watch list.`));
+          } catch (err) {
+            btn.disabled = false;
+            toast(err instanceof Error ? err.message : "Could not update the watch list");
+          }
+        },
+      },
+      `Move to ${STATUS_LABEL[sg.status]}`
+    );
+    wlSlot.replaceChildren(h("p", {}, `Watch List: ${sg.reason}.`), btn);
+  }
   const end = h(
     "div",
     { class: "endcard" },
     h("h2", {}, next ? `Chapter ${chap.id} complete` : "You're all caught up"),
     h("p", {}, next ? `Up next: Chapter ${next.id}` : "No more chapters."),
+    wlSlot,
     nextBtn,
     allBtn
   );
@@ -470,6 +498,7 @@ export function mountReader(root, s, chap) {
       chapterComplete = true;
       updateProgress();
       persistProgress(1);
+      renderWatchSuggestion();
     },
     { root: body, threshold: 0.5 }
   );

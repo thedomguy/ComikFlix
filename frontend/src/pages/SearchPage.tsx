@@ -7,6 +7,8 @@ import { useLibrary } from "../lib/library";
 import { byReadingOrder, progressOf, resumeTarget, unreadCount } from "../lib/series";
 import { toast } from "../lib/toast";
 import type { CatalogHit, Series } from "../lib/types";
+import { NewEntry, type Draft } from "../components/watchlist/EntryEditor";
+import { STATUS_LABEL, entryForSlug, useWatchlist } from "../lib/watchlist";
 import "../styles/search.css";
 
 const RECENT_KEY = "comikflix:recent-searches";
@@ -47,6 +49,8 @@ export default function SearchPage({ q: initial }: { q: string }) {
   const [active, setActive] = useState(0);
   const [catalog, setCatalog] = useState<Catalog>({ state: "idle", for: "", hits: [] });
   const [added, setAdded] = useState<Record<string, "adding" | "added">>({});
+  const [listDraft, setListDraft] = useState<Draft | null>(null);
+  const { entries } = useWatchlist();
   const input = useRef<HTMLInputElement>(null);
   const query = q.trim();
 
@@ -149,6 +153,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
     }
     for (const h of (catalog.for === query ? catalog.hits : []).filter((h) => !owned.has(h.slug)).slice(0, 8)) {
       const state = added[h.slug];
+      const onList = entryForSlug(h.slug);
       const add = async () => {
         if (state) return;
         remember();
@@ -176,19 +181,35 @@ export default function SearchPage({ q: initial }: { q: string }) {
               <b>{h.title}</b>
               <small>Asura Scans · not in your library</small>
             </span>
+            {onList ? (
+              <a className="sr-listed" href={`#/list/${onList.id}`} onClick={(e) => e.stopPropagation()}>
+                {STATUS_LABEL[onList.status]}
+              </a>
+            ) : (
+              <button
+                className="sr-list"
+                title="Add to your watch list without downloading"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setListDraft({ asura: h.slug, title: h.title });
+                }}
+              >
+                + List
+              </button>
+            )}
             {state === "added" ? (
               <a className="sr-added" href="#/downloads" onClick={(e) => e.stopPropagation()}>
                 Added — downloading ›
               </a>
             ) : (
-              <span className="sr-add">{state === "adding" ? "Adding…" : "Add"}</span>
+              <span className="sr-add">{state === "adding" ? "Adding…" : "Download"}</span>
             )}
           </div>
         ),
       });
     }
     return out;
-  }, [query, library, catalog, owned, added, progressVersion]);
+  }, [query, library, catalog, owned, added, progressVersion, entries]);
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "ArrowDown") {
@@ -278,6 +299,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
           {!items.some((i) => i.group !== "catalog") && <p className="sr-note">No matches in your library.</p>}
         </div>
       )}
+      {listDraft && <NewEntry draft={listDraft} onClose={() => setListDraft(null)} onDone={() => setListDraft(null)} />}
     </main>
   );
 }

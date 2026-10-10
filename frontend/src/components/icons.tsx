@@ -26,3 +26,10 @@ export const IconEye = ({ open }: { open: boolean }) => (
     {!open && <path d="M4 4l16 16" {...P} />}
   </svg>
 );
+export const IconList = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h12a1 1 0 0 1 1 1V21l-7-4.5L5 21V4.5a1 1 0 0 1 1-1z" {...P} /></svg>
+);
+/** Not downloaded: the entry lives only on the watch list, not in the library. */
+export const IconCloud = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.5a4 4 0 0 0 .4-8 6 6 0 0 0-11.6 1.6A3.3 3.3 0 0 0 7 18.5z" {...P} /></svg>
+);

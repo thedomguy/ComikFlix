@@ -7,6 +7,7 @@ import { progressOf, resumeTarget, totalPages } from "../lib/series";
 import { store } from "../lib/store";
 import { toast } from "../lib/toast";
 import type { ReleaseForecast, Series } from "../lib/types";
+import { WatchControl } from "../components/watchlist/WatchControl";
 
 /** Start chapter for "check for updates": the last owned chapter, or 1. */
 function updateStartChapter(s: Series) {
@@ -112,6 +113,7 @@ function Sheet({
         </div>
       </div>
       <div className="body">
+        <WatchControl s={s} />
         <div className="cols">
           <div>
             <div className="meta">

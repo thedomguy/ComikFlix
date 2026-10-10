@@ -76,3 +76,34 @@ export interface IngestJob {
   finished: number | null;
   [k: string]: unknown;
 }
+
+/** The user's own status for a watch list entry (not the series' publishing status). */
+export type WatchStatus = "reading" | "plan" | "completed";
+
+/** A watch list entry (watchlist.py): the user's record of a series, downloaded or not. */
+export interface WatchEntry {
+  id: string;
+  title: string;
+  status: WatchStatus;
+  rating: number | null; // stars 0.5-5 in half steps
+  notes: string | null;
+  source: "asura" | "manual";
+  asura_slug: string | null;
+  in_library: boolean;
+  source_url: string | null;
+  cover_url: string | null;
+  series_status: "ongoing" | "hiatus" | "completed" | "dropped" | null;
+  type: string | null;
+  author: string | null;
+  artist: string | null;
+  description: string | null;
+  genres: string[];
+  alt_titles: string[];
+  chapters_total: number | null;
+  progress: { chapter: string | null; read_count: number; read_at: number | null } | null;
+  suggestion: { status: WatchStatus; reason: string } | null;
+  status_at: string;
+  metadata_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
