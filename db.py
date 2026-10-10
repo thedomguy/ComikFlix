@@ -427,6 +427,14 @@ def put_progress_slug(slug: str, data: dict, *, reading: bool = True) -> dict:
     else:
         updated = _now()
     with transaction() as conn:
+        if reading:
+            # The app only ever adds to the read list, so a tab holding an old copy must not
+            # shrink it. Imports (Jarvis) replace it: that is how chapters get marked unread.
+            row = conn.execute("SELECT read_json FROM progress WHERE series_slug = ?", (slug,)).fetchone()
+            if row:
+                have = [str(c) for c in read]
+                seen = set(have)
+                read = have + [c for c in _loads(row["read_json"], []) if str(c) not in seen]
         conn.execute(
             "INSERT INTO progress(series_slug, chapter, frac, read_json, updated_at, read_at) "
             "VALUES(?, ?, ?, ?, ?, ?) "

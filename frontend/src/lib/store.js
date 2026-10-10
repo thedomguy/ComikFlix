@@ -50,11 +50,18 @@ async function putJson(url, body) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    return (await res.json().catch(() => null)) || true;
   } catch {
     /* offline / API missing — keep memory cache */
     return false;
   }
+}
+
+/** Chapters read in either list (the server never loses one the app sent). */
+function unionRead(a, b) {
+  const seen = new Set(a || []);
+  return [...(a || []), ...(b || []).filter((c) => !seen.has(c))];
 }
 
 function normalizeAutoScroll(raw) {
@@ -116,7 +123,17 @@ async function flushProgress() {
   progressTimer = null;
   const entries = [...pendingProgress.entries()];
   pendingProgress.clear();
-  await Promise.all(entries.map(([slug, data]) => putProgressSlug(slug, data)));
+  await Promise.all(
+    entries.map(async ([slug, data]) => {
+      const saved = await putProgressSlug(slug, data);
+      // The server merges in chapters read elsewhere; take them unless a newer write is queued.
+      const cur = state.progress[slug];
+      if (saved && Array.isArray(saved.read) && cur && !pendingProgress.has(slug)) {
+        cur.read = unionRead(cur.read, saved.read);
+        window.dispatchEvent(new Event("comikflix:progress"));
+      }
+    })
+  );
 }
 
 /** Read and normalize any pre-API localStorage blob (does not write back). */
@@ -266,7 +283,14 @@ async function refreshProgress() {
   for (const [slug, e] of Object.entries(map)) {
     if (!e || typeof e !== "object" || pendingProgress.has(slug)) continue;
     const cur = state.progress[slug];
-    if (cur && (e.at || 0) <= (cur.at || 0)) continue;
+    if (cur && (e.at || 0) <= (cur.at || 0)) {
+      const read = unionRead(cur.read, Array.isArray(e.read) ? e.read : []);
+      if (read.length !== (cur.read || []).length) {
+        cur.read = read;
+        changed = true;
+      }
+      continue;
+    }
     state.progress[slug] = {
       chapter: e.chapter,
       frac: e.frac ?? 0,
