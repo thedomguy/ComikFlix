@@ -4,7 +4,8 @@
   "description": "Local comic reader library",
   "start_url": "./",
   "scope": "./",
-  "display": "standalone",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
   "background_color": "#141414",
   "theme_color": "#e50914",
   "icons": [

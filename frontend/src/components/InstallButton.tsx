@@ -9,7 +9,7 @@ interface BeforeInstallPromptEvent extends Event {
 // Chromium hands us an install prompt via beforeinstallprompt; iOS Safari never does,
 // so there the button explains Share -> Add to Home Screen.
 const standalone = () =>
-  matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+  matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches || (navigator as { standalone?: boolean }).standalone === true;
 const ios = () =>
   /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
