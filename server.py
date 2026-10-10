@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import auth
 import db
+import db_ingest
 import ingest
 import r2
 import remote
@@ -117,15 +118,21 @@ def scan_library() -> list[dict]:
     """Thin library index: series + chapter metadata, no page URL arrays.
 
     Chapter entries carry only what the clients use (id, page_count, date); the reader
-    gets everything else per chapter from /api/series/<slug>/chapters/<id>."""
+    gets everything else per chapter from /api/series/<slug>/chapters/<id>.
+
+    `pending` lists chapters the source has but whose pages were never fetched and whose
+    size isn't known (mgeko lists no page counts): the app offers them as "Click to add"."""
     series_list = []
     for row in db.list_series_rows():
         slug = row["slug"]
         chapters_out = []
+        pending = []
         first_source_url = None
         for ch in db.list_chapters(slug):
             page_count = _chapter_page_count(slug, ch)
             if page_count <= 0:
+                if ch["source_url"]:
+                    pending.append({"id": ch["chapter_id"], "date": ch["published_at"]})
                 continue
             if not chapters_out:
                 first_source_url = ch["source_url"]
@@ -170,6 +177,7 @@ def scan_library() -> list[dict]:
             "size": 0,
             "page_total": sum(c["page_count"] for c in chapters_out),
             "chapters": chapters_out,
+            "pending": pending,
         })
     return series_list
 
@@ -686,6 +694,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
             return self.send_json(job, HTTPStatus.ACCEPTED)
         parts = path.split("/")  # ['', 'api', 'ingest', <id>, <action>]
+        if len(parts) == 7 and parts[:3] == ["", "api", "series"] and parts[4] == "chapters" and parts[6] == "add":
+            return self.add_chapter(unquote(parts[3]), unquote(parts[5]))
         if len(parts) == 5 and parts[:3] == ["", "api", "ingest"] and parts[4] == "cancel":
             ok = INGEST.cancel(parts[3])
             return self.send_json({"ok": ok}, HTTPStatus.OK if ok else HTTPStatus.NOT_FOUND)
@@ -698,6 +708,34 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError as e:
                 return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def add_chapter(self, slug: str, chapter_id: str) -> None:
+        """POST /api/series/<slug>/chapters/<id>/add: fetch one listed chapter's page URLs now
+        ("Click to add" in the chapter list)."""
+        row = db.get_conn().execute(
+            "SELECT status FROM chapters WHERE series_slug = ? AND chapter_id = ?", (slug, chapter_id)
+        ).fetchone()
+        if not row:
+            return self.send_json({"error": "unknown chapter"}, HTTPStatus.NOT_FOUND)
+        with _scrape_locks_guard:
+            lock = _scrape_locks.setdefault((slug, chapter_id), threading.Lock())
+        with lock:
+            if not ingest.chapter_complete(slug, chapter_id):
+                try:
+                    ingest.ingest_chapter_metadata(slug, chapter_id, timeout=20)
+                except Exception as e:
+                    try:
+                        db_ingest.mark_chapter_failed(slug, chapter_id)
+                    except Exception:
+                        pass
+                    return self.send_json(
+                        {"error": f"Could not add chapter {chapter_id}: {ingest._error_text(e)}"},
+                        HTTPStatus.BAD_GATEWAY,
+                    )
+        pages = db.get_conn().execute(
+            "SELECT COUNT(*) AS n FROM pages WHERE series_slug = ? AND chapter_id = ?", (slug, chapter_id)
+        ).fetchone()["n"]
+        return self.send_json({"id": chapter_id, "page_count": pages})
 
     def do_DELETE(self):
         path = self.path.split("?", 1)[0]

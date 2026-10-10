@@ -80,7 +80,7 @@ function Sheet({
 }) {
   const r = resumeTarget(s);
   const updating = jobs.some((j) => j.slug === s.slug && j.state === "running");
-  const missing = s.remote_total != null ? Math.max(0, s.remote_total - s.chapters.length) : 0;
+  const missing = s.remote_total != null ? Math.max(0, s.remote_total - s.chapters.length - (s.pending?.length || 0)) : 0;
   const nextRel = (s.status || "").toLowerCase() === "ongoing" && s.next_release ? nextReleaseLabel(s.next_release) : null;
   const alts = (s.alt_titles || []).slice(0, 3).join(" • ");
 
@@ -167,7 +167,7 @@ function Sheet({
             )}
           </div>
         </div>
-        <ChapterList s={s} progressVersion={progressVersion} />
+        <ChapterList s={s} progressVersion={progressVersion} refresh={refresh} />
       </div>
     </div>
   );
@@ -209,9 +209,21 @@ function ReleaseDate({ s, refresh }: { s: Series; refresh: () => Promise<void> }
   );
 }
 
-function ChapterList({ s, progressVersion }: { s: Series; progressVersion: number }) {
+/** "Click to add": fetch a listed chapter's page URLs now; it then shows like any other. */
+async function addChapter(s: Series, id: string, refresh: () => Promise<void>) {
+  const r = await api<{ page_count: number }>(
+    `/api/series/${encodeURIComponent(s.slug)}/chapters/${encodeURIComponent(id)}/add`,
+    { method: "POST", json: {} }
+  );
+  await refresh();
+  toast(`Chapter ${id} added (${r.page_count} pages)`);
+}
+
+function ChapterList({ s, progressVersion, refresh }: { s: Series; progressVersion: number; refresh: () => Promise<void> }) {
   const [query, setQuery] = useState("");
   const [newest, setNewest] = useState<boolean>(store.sortNewest);
+  const [adding, setAdding] = useState<Set<string>>(new Set());
+  const pending = s.pending || [];
 
   const rows = useMemo(() => {
     void progressVersion;
@@ -219,17 +231,40 @@ function ChapterList({ s, progressVersion }: { s: Series; progressVersion: numbe
     const idq = q.replace(/^ch(apter)?\.?\s*/, "");
     const match = (id: string, date: string | null) =>
       !q || id.startsWith(idq) || (/[a-z]/.test(q) && !!date && fmtDate(date).toLowerCase().includes(q));
-    const list = [...s.chapters].sort((a, b) => parseFloat(a.id) - parseFloat(b.id));
+    const list: { id: string; date: string | null; page_count?: number; pages?: unknown[]; toAdd?: boolean }[] = [
+      ...s.chapters,
+      ...pending.map((c) => ({ ...c, toAdd: true })),
+    ].sort((a, b) => parseFloat(a.id) - parseFloat(b.id));
     if (newest) list.reverse();
     return list.filter((c) => match(c.id, c.date));
   }, [s, query, newest, progressVersion]);
+  const total = s.chapters.length + pending.length;
+
+  const add = async (id: string) => {
+    if (adding.has(id)) return;
+    setAdding((a) => new Set(a).add(id));
+    try {
+      await addChapter(s, id, refresh);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : `Could not add chapter ${id}`);
+    } finally {
+      setAdding((a) => {
+        const next = new Set(a);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
 
   const p = progressOf(s.slug);
   const read = useMemo(() => new Set(p?.read || []), [p]); // O(1) per row (saves replace `p`)
   return (
     <>
       <div className="chhead">
-        <h3>{query.trim() ? `${rows.length} of ${s.chapters.length} Chapters` : `${s.chapters.length} Chapters`}</h3>
+        <h3>
+          {query.trim() ? `${rows.length} of ${total} Chapters` : `${total} Chapters`}
+          {pending.length ? <small className="chpending"> · {pending.length} to add</small> : null}
+        </h3>
         <button
           className="sortbtn"
           title="Toggle sort order"
@@ -256,6 +291,22 @@ function ChapterList({ s, progressVersion }: { s: Series; progressVersion: numbe
             const done = read.has(c.id);
             const cur = p?.chapter === c.id && !done;
             const date = c.date ? fmtDate(c.date) : "";
+            if (c.toAdd) {
+              const busy = adding.has(c.id);
+              return (
+                <li key={c.id} className="toadd" onClick={() => add(c.id)}>
+                  <div className="num">{c.id}</div>
+                  <div className="t">
+                    Chapter {c.id}
+                    <small>{date || "Not added yet"}</small>
+                  </div>
+                  <div className={`badge${done ? " done" : ""}`}>
+                    {done ? "✓ Read · " : ""}
+                    <span className="addlbl">{busy ? "Adding…" : "+ Click to add"}</span>
+                  </div>
+                </li>
+              );
+            }
             const meta = `${c.page_count || c.pages?.length || 0} pages${date ? ` · ${date}` : ""}`;
             return (
               <li key={c.id} onClick={() => (location.hash = `#/read/${s.slug}/${c.id}`)}>

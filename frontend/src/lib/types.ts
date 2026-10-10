@@ -46,6 +46,8 @@ export interface Series {
   size: number;
   page_total: number;
   chapters: Chapter[]; // ascending
+  /** Chapters the source lists but never fetched, size unknown: offered as "Click to add". */
+  pending?: { id: string; date: string | null }[];
 }
 
 export interface Progress {

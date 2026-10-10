@@ -611,3 +611,8 @@ a.dl-title:hover { text-decoration: underline; }
 .tray-all { margin-left: auto; margin-right: 8px; font-size: 13px; color: var(--muted); }
 .tray-all:hover { color: var(--fg); }
 .thead .tray-all ~ .chev { margin-left: 0; }
+
+/* "Click to add": chapters the source lists that were never fetched */
+.chapters li.toadd .num, .chapters li.toadd .t { opacity: 0.6; }
+.chapters li.toadd .addlbl { color: var(--accent, #e50914); font-weight: 600; }
+.chhead .chpending { font-size: 13px; font-weight: 400; color: var(--muted); }

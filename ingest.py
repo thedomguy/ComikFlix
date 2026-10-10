@@ -37,6 +37,7 @@ import asura_chapter_pages as asura
 import db
 import db_ingest
 import download
+import mgeko
 import optimize_images
 import r2
 
@@ -60,8 +61,10 @@ CHAPTER_LINK_RE = re.compile(r'href="/comics/[^"/]+/chapter/([0-9]+(?:\.[0-9]+)?
 
 
 def parse_slug(value: str) -> str:
-    """Accept a bare slug or any asurascans.com/comics/<slug>[/...] URL."""
+    """Accept a bare slug or any asurascans.com/comics/<slug>[/...] URL (or an mgeko one)."""
     value = value.strip()
+    if mgeko.is_mgeko(value):
+        return mgeko.parse_slug(value)
     if "/" in value:
         parts = urlparse(value if "//" in value else "//" + value).path.strip("/").split("/")
         if "comics" in parts and parts.index("comics") + 1 < len(parts):
@@ -114,6 +117,8 @@ def fetch_series_info(slug: str) -> dict:
 
     Asura sometimes changes a series' id suffix and redirects the old URL; the slug we end up
     on is the real one (info["slug"]), and info["moved_from"] names the old one."""
+    if mgeko.is_mgeko(slug):
+        return mgeko.fetch_series_info(slug)
     page, final_url = asura.fetch_page(SERIES_URL.format(slug=slug))
     moved_from = None
     if "/comics/" in final_url:
@@ -226,7 +231,20 @@ def _upload_cover(client: r2.R2Client, slug: str, cover_url: str) -> tuple[str, 
 
 
 def _chapter_source_url(slug: str, chapter: str) -> str:
+    """Asura chapter URLs follow a pattern; mgeko ones are kept from its chapter list."""
+    if mgeko.is_mgeko(slug):
+        row = db.get_conn().execute(
+            "SELECT source_url FROM chapters WHERE series_slug=? AND chapter_id=?", (slug, str(chapter))
+        ).fetchone()
+        if not row or not row["source_url"]:
+            raise RuntimeError("chapter link unknown; check the series for new chapters first")
+        return row["source_url"]
     return CHAPTER_URL.format(slug=slug, chapter=chapter)
+
+
+def _extract_pages(slug: str, url: str, timeout: float = 30.0) -> list[dict]:
+    page = asura.fetch_html(url, timeout=timeout)
+    return mgeko.extract_pages(page) if mgeko.is_mgeko(slug) else asura.extract_pages(page)
 
 
 def save_series_info(
@@ -278,7 +296,7 @@ def _sync_chapter_metadata(info: dict, *, overwrite: bool = False) -> None:
         if number is None or c.get("locked"):
             continue
         chapter_id = str(number)
-        source_url = _chapter_source_url(slug, chapter_id)
+        source_url = c.get("url") or CHAPTER_URL.format(slug=slug, chapter=chapter_id)
         published = c.get("published_at")
         page_count = c.get("page_count")
         try:
@@ -332,8 +350,8 @@ def ingest_chapter_metadata(
 
     Returns page count. Raises on failure.
     """
-    url = CHAPTER_URL.format(slug=slug, chapter=chapter)
-    pages_meta = asura.extract_pages(asura.fetch_html(url, timeout=timeout))
+    url = _chapter_source_url(slug, chapter)
+    pages_meta = _extract_pages(slug, url, timeout)
     if not pages_meta:
         raise RuntimeError("no reader pages found on chapter page")
     # Asura's chapter list says how many pages there are; never mark a partial capture ready.
@@ -386,8 +404,8 @@ def ingest_chapter(
     ingest_chapter_metadata instead. Returns page count. Raises on failure.
     Temp files are always deleted.
     """
-    url = CHAPTER_URL.format(slug=slug, chapter=chapter)
-    pages_meta = asura.extract_pages(asura.fetch_html(url))
+    url = _chapter_source_url(slug, chapter)
+    pages_meta = _extract_pages(slug, url)
     if not pages_meta:
         raise RuntimeError("no reader pages found on chapter page")
     manifest = asura.build_result(url, pages_meta)

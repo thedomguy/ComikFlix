@@ -49,14 +49,14 @@ export function AddComicModal({ onClose }: { onClose: () => void }) {
         <h2 id="ing-title">Add a comic</h2>
         <p className="hint">
           Reads the series info and indexes chapter page URLs from the start chapter onward (optionally up to a latest
-          chapter). Images load from Asura CDN; chapters you already have are skipped.
+          chapter). Works with Asura Scans and mgeko.cc links. Images load from the source's CDN; chapters you already have are skipped.
         </p>
         <form onSubmit={submit} noValidate>
           <div className="full">
             <label htmlFor="ing-series">Series slug or URL</label>
             <input
               id="ing-series"
-              placeholder="series slug or asurascans.com comic URL"
+              placeholder="asurascans.com or mgeko.cc series URL, or a slug"
               autoComplete="off"
               spellCheck={false}
               autoFocus

@@ -33,7 +33,7 @@ export function SeriesCard({ s, onClick }: { s: Series; onClick?: () => void }) 
           {s.chapters.length} chapter{s.chapters.length === 1 ? "" : "s"}
         </span>
       </div>
-      {p && <div className="bar" style={{ width: `${Math.round((100 * (p.read?.length || 0)) / s.chapters.length)}%` }} />}
+      {p && <div className="bar" style={{ width: `${Math.min(100, Math.round((100 * (p.read?.length || 0)) / (s.chapters.length + (s.pending?.length || 0))))}%` }} />}
       {hover.rect && <HoverCard s={s} anchor={hover.rect} onClose={hover.close} />}
     </div>
   );
