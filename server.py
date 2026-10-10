@@ -33,6 +33,7 @@ import auth
 import db
 import db_ingest
 import ingest
+import mgeko
 import r2
 import remote
 import watchlist
@@ -163,6 +164,8 @@ def scan_library() -> list[dict]:
             "description": row["description"],
             "genres": genres,
             "status": row["status"],
+            "status_manual": bool(row["status_manual"]),  # set by hand; refreshes keep it
+            "source": "mgeko" if mgeko.is_mgeko(slug) else "asura",
             "author": row["author"],
             "artist": row["artist"],
             "type": row["type"],
@@ -638,7 +641,10 @@ class Handler(SimpleHTTPRequestHandler):
         parts = path.split("/")
         if len(parts) == 4 and parts[:3] == ["", "api", "series"]:
             slug = unquote(parts[3])
-            updated = db.patch_series(slug, data)
+            try:
+                updated = db.patch_series(slug, data)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
             if not updated:
                 return self.send_json({"error": "unknown series"}, HTTPStatus.NOT_FOUND)
             return self.send_json(updated)

@@ -79,6 +79,8 @@ function Sheet({
   progressVersion: number;
 }) {
   const r = resumeTarget(s);
+  // Finished series aren't checked for new chapters (set the status back to ongoing to resume).
+  const ended = ["completed", "dropped"].includes((s.status || "").toLowerCase());
   const updating = jobs.some((j) => j.slug === s.slug && j.state === "running");
   const missing = s.remote_total != null ? Math.max(0, s.remote_total - s.chapters.length - (s.pending?.length || 0)) : 0;
   const nextRel = (s.status || "").toLowerCase() === "ongoing" && s.next_release ? nextReleaseLabel(s.next_release) : null;
@@ -96,20 +98,22 @@ function Sheet({
             ▶ {r.label}
             {r.label === "Continue" ? ` Ch. ${r.chapter}` : ""}
           </button>
-          <button
-            className="btn info"
-            disabled={updating}
-            onClick={async () => {
-              try {
-                await startIngest({ series: s.slug, start_chapter: updateStartChapter(s) });
-                toast("Checking for new chapters in the background");
-              } catch (e) {
-                toast(e instanceof Error ? e.message : "Could not start the update");
-              }
-            }}
-          >
-            {updating ? "⟳ Updating…" : missing ? `⟳ Update (${missing} new)` : "⟳ Check for new chapters"}
-          </button>
+          {!ended && (
+            <button
+              className="btn info"
+              disabled={updating}
+              onClick={async () => {
+                try {
+                  await startIngest({ series: s.slug, start_chapter: updateStartChapter(s) });
+                  toast("Checking for new chapters in the background");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Could not start the update");
+                }
+              }}
+            >
+              {updating ? "⟳ Updating…" : missing ? `⟳ Update (${missing} new)` : "⟳ Check for new chapters"}
+            </button>
+          )}
         </div>
       </div>
       <div className="body">
@@ -161,7 +165,7 @@ function Sheet({
               <div>
                 Source:{" "}
                 <a href={s.source_url} target="_blank" rel="noreferrer">
-                  {new URL(s.source_url).hostname}
+                  {s.source === "mgeko" ? "mgeko" : "Asura Scans"}
                 </a>
               </div>
             )}

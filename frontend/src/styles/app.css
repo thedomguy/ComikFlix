@@ -616,3 +616,13 @@ a.dl-title:hover { text-decoration: underline; }
 .chapters li.toadd .num, .chapters li.toadd .t { opacity: 0.6; }
 .chapters li.toadd .addlbl { color: var(--accent, #e50914); font-weight: 600; }
 .chhead .chpending { font-size: 13px; font-weight: 400; color: var(--muted); }
+
+/* Reader: "Last chapter added" when Prev has nothing earlier to open */
+.reader-notice {
+  position: fixed; top: calc(12px + var(--safe-top, 0px)); left: 50%; z-index: 60;
+  transform: translate(-50%, -8px); opacity: 0; pointer-events: none;
+  background: rgba(20,20,20,.92); color: #fff; border-radius: 999px; padding: 10px 18px;
+  font-size: 14px; font-weight: 600; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  transition: opacity .2s, transform .2s;
+}
+.reader-notice.on { opacity: 1; transform: translate(-50%, 0); }

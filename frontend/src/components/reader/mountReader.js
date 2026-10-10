@@ -59,6 +59,19 @@ export function mountReader(root, s, chap) {
   const prev = s.chapters[idx - 1];
   const next = s.chapters[idx + 1];
   const go = (c) => (location.hash = `#/read/${s.slug}/${c.id}`);
+  // Earlier chapters the source lists but that were never added ("Click to add" on the
+  // series page): Prev stays live and says so instead of going anywhere.
+  const olderToAdd = !prev && (s.pending || []).some((c) => parseFloat(c.id) < parseFloat(chap.id));
+  const notice = h("div", { class: "reader-notice", role: "status" }, "Last chapter added");
+  let noticeTimer = 0;
+  const showNotice = () => {
+    notice.classList.remove("on");
+    void notice.offsetWidth; // restart the animation on every press
+    notice.classList.add("on");
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => notice.classList.remove("on"), 1800);
+  };
+  const goPrev = () => (prev ? go(prev) : olderToAdd && showNotice());
   const chapterOf = (id) => s.chapters.find((c) => c.id === id);
 
   const pageEls = chap.pages.map((pg, i) => {
@@ -341,7 +354,7 @@ export function mountReader(root, s, chap) {
   const foot = h(
     "div",
     { class: "reader-foot" },
-    h("button", { class: "rnav prev", disabled: !prev, onclick: () => prev && go(prev), title: "Previous chapter (←)" }, "‹ Prev"),
+    h("button", { class: "rnav prev", disabled: !prev && !olderToAdd, onclick: goPrev, title: "Previous chapter (←)" }, "‹ Prev"),
     h(
       "label",
       { class: "rpick", title: "Jump to chapter" },
@@ -464,7 +477,7 @@ export function mountReader(root, s, chap) {
   );
 
   body.append(strip, end);
-  root.replaceChildren(chrome, body, foot, resumeToast, playBtn, fsBtn || "");
+  root.replaceChildren(chrome, body, foot, resumeToast, notice, playBtn, fsBtn || "");
   setChromeAway(true);
   document.body.style.overflow = "hidden";
 
@@ -537,7 +550,7 @@ export function mountReader(root, s, chap) {
     if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
     if (e.key === "Escape") location.hash = `#/series/${s.slug}`;
     else if (e.key === "ArrowRight" && next) go(next);
-    else if (e.key === "ArrowLeft" && prev) go(prev);
+    else if (e.key === "ArrowLeft") goPrev();
     else if (e.key === " " || e.key === "Spacebar") {
       e.preventDefault();
       toggleAutoplay();
@@ -666,8 +679,8 @@ export function mountReader(root, s, chap) {
           setSpeed(Number(cmd.value) || speed);
           break;
         case "chapter": {
-          const c = cmd.dir < 0 ? prev : next;
-          if (c) go(c);
+          if (cmd.dir < 0) goPrev();
+          else if (next) go(next);
           break;
         }
       }
@@ -683,6 +696,7 @@ export function mountReader(root, s, chap) {
     chromeSizer.disconnect();
     endWatcher.disconnect();
     clearTimeout(timer);
+    clearTimeout(noticeTimer);
     persistProgress();
     store.flush();
     body.removeEventListener("scroll", onScroll);

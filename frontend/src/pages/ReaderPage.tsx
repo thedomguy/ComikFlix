@@ -12,12 +12,17 @@ type Load = { state: "loading" } | { state: "error" } | { state: "ready"; chap: 
 
 /** #/read/<slug>/<chapter>. App keys this by slug/chapter, so each chapter is a fresh mount. */
 export default function ReaderPage({ slug, chapter }: { slug: string; chapter: string }) {
-  const { bySlug } = useLibrary();
+  const { bySlug, refresh } = useLibrary();
   // Read the series once: the library context re-renders on every progress save while
   // reading, and nothing below may restart because of that.
-  const [series] = useState<Series | undefined>(() => bySlug(slug));
+  const [series, setSeries] = useState<Series | undefined>(() => bySlug(slug));
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const root = useRef<HTMLDivElement>(null);
+  // A chapter added since this tab loaded the library (another device, or Jarvis opening a
+  // "Click to add" chapter): reload the library once before giving up on it.
+  const latest = useRef(bySlug);
+  latest.current = bySlug;
+  const [retried, setRetried] = useState(false);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -29,6 +34,15 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
   useEffect(() => {
     const chap = series?.chapters.find((c) => c.id === chapter);
     if (!series || !chap) {
+      const fresh = retried ? latest.current(slug) : undefined;
+      if (fresh && fresh !== series && fresh.chapters.some((c) => c.id === chapter)) {
+        setSeries(fresh);
+        return;
+      }
+      if (!retried) {
+        refresh().finally(() => setRetried(true));
+        return;
+      }
       location.hash = series ? `#/series/${series.slug}` : "#/";
       return;
     }
@@ -50,7 +64,7 @@ export default function ReaderPage({ slug, chapter }: { slug: string; chapter: s
     return () => {
       alive = false;
     };
-  }, [series, slug, chapter]);
+  }, [series, slug, chapter, retried]);
 
   // Layout effect: the reader's cleanup measures the scroll pane to save progress, which
   // only works while its DOM is still attached.

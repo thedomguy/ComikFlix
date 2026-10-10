@@ -275,6 +275,10 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(progress)")}
     if "read_at" not in cols:
         conn.execute("ALTER TABLE progress ADD COLUMN read_at TEXT")
+    # status_manual: the status was set by hand (app/Jarvis), so source refreshes keep it.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(series)")}
+    if "status_manual" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN status_manual INTEGER NOT NULL DEFAULT 0")
 
 
 def init_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -491,7 +495,7 @@ def upsert_series(row: dict) -> None:
                 author = excluded.author,
                 artist = excluded.artist,
                 type = excluded.type,
-                status = excluded.status,
+                status = CASE WHEN series.status_manual THEN series.status ELSE excluded.status END,
                 rating = excluded.rating,
                 bookmarks = excluded.bookmarks,
                 alt_titles_json = excluded.alt_titles_json,
@@ -592,9 +596,21 @@ def _replace_pages(conn: sqlite3.Connection, series_slug: str, chapter_id: str, 
 
 
 
+SERIES_STATUSES = ("ongoing", "completed", "hiatus", "dropped")
+
+
 def patch_series(slug: str, fields: dict) -> dict | None:
-    """Update editable series fields. Currently: release_date."""
+    """Update editable series fields: release_date, and status (set by hand it sticks through
+    source refreshes; "auto" hands it back to the source, which sets it on the next refresh)."""
     allowed = {}
+    if "status" in fields:
+        val = str(fields["status"] or "auto").strip().lower()
+        if val == "auto":
+            allowed["status_manual"] = 0
+        elif val in SERIES_STATUSES:
+            allowed["status"], allowed["status_manual"] = val, 1
+        else:
+            raise ValueError(f"status must be one of {', '.join(SERIES_STATUSES)} or auto")
     if "release_date" in fields:
         val = fields["release_date"]
         if val is None or val == "":
