@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { bg, fmtSize } from "../lib/format";
 import { useLibrary } from "../lib/library";
-import { byReadingOrder, chapterCount, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
+import { byReadingOrder, chapterCount, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, unreadCount, type ReleaseEvent } from "../lib/series";
 import { SeriesCard } from "../components/SeriesCard";
 import { WatchCard } from "../components/watchlist/WatchCard";
 import { useWatchlist } from "../lib/watchlist";
@@ -55,9 +55,20 @@ export default function HomePage() {
 
   const rows = useMemo(() => {
     void progressVersion; // progress decides these rows
+    // Every started series sits in exactly one row, all in reading order (releases never reorder):
+    // caught up -> "Caught up"; everything left to read came out after you caught up -> "New
+    // chapters"; otherwise (mid-chapter or a backlog) -> "Continue Reading".
     const started = library.filter((s) => progressOf(s.slug)).sort(byReadingOrder);
-    const fresh = started.filter((s) => newSinceRead(s) > 0);
-    return { ...libRows, started, fresh };
+    const caughtUp: typeof started = [];
+    const fresh: typeof started = [];
+    const reading: typeof started = [];
+    for (const s of started) {
+      const unread = unreadCount(s);
+      if (!unread) caughtUp.push(s);
+      else if (newSinceRead(s) >= unread) fresh.push(s);
+      else reading.push(s);
+    }
+    return { ...libRows, reading, fresh, caughtUp };
   }, [library, libRows, progressVersion]);
 
   // Watch list "Reading": what the user says they're reading, downloaded or not.
@@ -80,7 +91,7 @@ export default function HomePage() {
     );
   }
 
-  const hero = rows.started[0] || library[0];
+  const hero = rows.reading[0] || rows.fresh[0] || library[0];
   const r = resumeTarget(hero);
   const { bySlug } = rows;
 
@@ -106,9 +117,9 @@ export default function HomePage() {
       </header>
 
       <div className="rows">
-        {rows.started.length > 0 && (
+        {rows.reading.length > 0 && (
           <Row title="Continue Reading">
-            {rows.started.map((s) => (
+            {rows.reading.map((s) => (
               <SeriesCard key={s.slug} s={s} titleOnly />
             ))}
           </Row>
@@ -116,6 +127,13 @@ export default function HomePage() {
         {reading.length > 0 && (
           <Row title="Your Watch List · Reading" link={{ href: "#/list?status=reading", label: "Watch List →" }}>
             {reading.map(({ e, s }) => (s ? <SeriesCard key={e.id} s={s} /> : <WatchCard key={e.id} e={e} />))}
+          </Row>
+        )}
+        {rows.caughtUp.length > 0 && (
+          <Row title="Caught up">
+            {rows.caughtUp.map((s) => (
+              <SeriesCard key={s.slug} s={s} />
+            ))}
           </Row>
         )}
         {rows.fresh.length > 0 && (
