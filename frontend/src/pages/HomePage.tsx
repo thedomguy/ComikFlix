@@ -71,14 +71,20 @@ export default function HomePage() {
     return { ...libRows, reading, fresh, caughtUp };
   }, [library, libRows, progressVersion]);
 
-  // Watch list "Reading": what the user says they're reading, downloaded or not.
+  // Watch list "Reading": what the user says they're reading, downloaded or not. Most unread
+  // chapters first; entries with none (or not in the library) follow, last updated first.
   const reading = useMemo(() => {
+    void progressVersion; // unread counts change as you read
     const bySlug = new Map(library.map((s) => [s.slug, s]));
     return entries
       .filter((e) => e.status === "reading")
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-      .map((e) => ({ e, s: e.in_library && e.asura_slug ? bySlug.get(e.asura_slug) : undefined }));
-  }, [entries, library]);
+      .map((e) => {
+        const s = e.in_library && e.asura_slug ? bySlug.get(e.asura_slug) : undefined;
+        return { e, s, unread: s ? unreadCount(s) : 0 };
+      })
+      .sort((a, b) => b.unread - a.unread);
+  }, [entries, library, progressVersion]);
 
   if (!library.length) {
     return (
