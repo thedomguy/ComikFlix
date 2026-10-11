@@ -10,7 +10,8 @@ from __future__ import annotations
 import html as htmllib
 import re
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from difflib import SequenceMatcher
+from urllib.parse import quote, urljoin, urlparse
 
 import asura_chapter_pages as asura
 
@@ -18,7 +19,9 @@ BASE = "https://www.mgeko.cc"
 PREFIX = "mgeko-"
 SERIES_URL = BASE + "/manga/{slug}/"
 CHAPTERS_URL = BASE + "/manga/{slug}/all-chapters/"
+SEARCH_URL = BASE + "/autocomplete?term={q}"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,120}$")
+SEARCH_ITEM_RE = re.compile(r'<a href="/manga/([^"/]+)/" title="([^"]*)"')
 
 ITEM_RE = re.compile(
     r'<a href="(/reader/[^"]+)"[^>]*>.*?<strong class="chapter-title">\s*([^<]*?)\s*</strong>'
@@ -104,6 +107,24 @@ def _number(title: str) -> str | None:
         return None
     n = float(m.group(1))
     return str(int(n)) if n.is_integer() else m.group(1)
+
+
+def search(query: str, limit: int = 8) -> list[dict]:
+    """Find series on mgeko by title (the site's own search box), scored like the Asura
+    catalogue search so the two can be compared."""
+    words = re.findall(r"[a-z0-9]+", (query or "").lower())
+    if not words:
+        return []
+    page = asura.fetch_html(SEARCH_URL.format(q=quote(" ".join(words))))
+    out = []
+    for site, title in SEARCH_ITEM_RE.findall(page):
+        title = htmllib.unescape(title)
+        name = re.findall(r"[a-z0-9]+", title.lower())
+        overlap = sum(1 for w in words if w in name) / len(words)
+        ratio = SequenceMatcher(None, " ".join(words), " ".join(name)).ratio()
+        out.append({"slug": PREFIX + site, "title": title, "url": SERIES_URL.format(slug=site),
+                    "score": round(0.6 * overlap + 0.4 * ratio, 3), "source": "mgeko"})
+    return sorted(out, key=lambda r: -r["score"])[:limit]
 
 
 def fetch_series_info(slug: str) -> dict:

@@ -574,11 +574,16 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/downloads":
             return self.send_json(self.downloads())
         if path == "/api/catalog":
-            q = parse_qs(urlparse(self.path).query).get("q", [""])[0][:100]
+            qs = parse_qs(urlparse(self.path).query)
+            q = qs.get("q", [""])[0][:100]
+            # source=mgeko searches mgeko.cc instead of the Asura catalogue (the default).
+            mg = qs.get("source", [""])[0] == "mgeko"
             try:
-                return self.send_json(ingest.catalog_search(q))
+                hits = mgeko.search(q) if mg else [{**h, "source": "asura"} for h in ingest.catalog_search(q)]
+                return self.send_json(hits)
             except Exception as e:
-                return self.send_json({"error": f"Could not read the Asura catalogue: {e}"}, HTTPStatus.BAD_GATEWAY)
+                site = "mgeko" if mg else "the Asura catalogue"
+                return self.send_json({"error": f"Could not search {site}: {e}"}, HTTPStatus.BAD_GATEWAY)
         if path == "/api/library":
             return self.send_library()
         if path == "/api/watchlist" or path.startswith("/api/watchlist/"):
