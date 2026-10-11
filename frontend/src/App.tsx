@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, LOGIN_EVENT } from "./lib/api";
 import { LibraryProvider, LibraryRefSync, libraryRef, useLibrary } from "./lib/library";
 import { isMobile, useRoute } from "./lib/route";
+import { resumeTarget } from "./lib/series";
 import { initScreen } from "./lib/screen";
 import { Nav } from "./components/Nav";
 import { Toast } from "./components/Toast";
@@ -159,6 +160,7 @@ function Shell() {
   else if (view === "calendar") page = <CalendarPage month={parts[0]} />;
   else if (view === "downloads") page = <DownloadsPage />;
   else if (view === "list") page = <WatchlistPage id={parts[0]} query={query} />;
+  else if (view === "continue") page = <ContinueRedirect slug={parts[0]} />;
   else page = <HomePage />;
 
   return (
@@ -175,6 +177,17 @@ function Shell() {
       <IngestHost addOpen={addOpen} onCloseAdd={() => setAddOpen(false)} />
     </>
   );
+}
+
+/** #/continue/<slug> (what /go/continue/<slug> links open): wherever "Continue" points at the
+ *  moment the link is opened, so an old link still lands on the right chapter. */
+function ContinueRedirect({ slug }: { slug?: string }) {
+  const { bySlug } = useLibrary();
+  const s = bySlug(slug);
+  useEffect(() => {
+    location.replace(s ? `#/read/${s.slug}/${resumeTarget(s).chapter}` : "#/");
+  }, [s]);
+  return null;
 }
 
 /** How deep a screen sits (tabs = 0): deeper slides in from the right, shallower slides back. */

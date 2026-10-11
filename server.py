@@ -607,7 +607,32 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith(r2.PROXY_PREFIX):
             key = unquote(path[len(r2.PROXY_PREFIX):])
             return self._send_r2_object(key)
+        if path == "/go" or path.startswith("/go/"):
+            return self.go_link(path)
         super().do_GET()
+
+    # Shareable links (Jarvis hands them to ChatGPT/Claude as clickable URLs):
+    #   /go  /go/series/<slug>  /go/read/<slug>/<chapter>  /go/continue/<slug>  /go/list[/<id>]
+    # Today they redirect into the web app; this is the one place to send them to a mobile
+    # app later. Public on purpose: they only redirect, and the app itself asks for a login.
+    GO_VIEWS = {"series": 1, "read": 2, "continue": 1, "list": (0, 1)}
+
+    def go_link(self, path: str) -> None:
+        segs = [unquote(s) for s in path.strip("/").split("/")[1:]]
+        view, args = (segs[0], segs[1:]) if segs else ("", [])
+        want = self.GO_VIEWS.get(view, 0 if not view else -1)
+        ok = len(args) in want if isinstance(want, tuple) else len(args) == want
+        if not ok or not all(re.fullmatch(r"[A-Za-z0-9._-]{1,160}", a) for a in args):
+            return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        target = "#/" + "/".join([view, *args]) if view else "#/"
+        # Relative, so it works behind the /readers prefix the proxy strips: from
+        # /readers/go/series/x, "../../" is /readers/.
+        depth = path[1:].count("/")
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", ("../" * depth or "./") + target)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_PUT(self):
         path = self.path.split("?", 1)[0]
