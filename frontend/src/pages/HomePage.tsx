@@ -120,7 +120,7 @@ export default function HomePage() {
         {rows.reading.length > 0 && (
           <Row title="Continue Reading">
             {rows.reading.map((s) => (
-              <SeriesCard key={s.slug} s={s} titleOnly />
+              <SeriesCard key={s.slug} s={s} />
             ))}
           </Row>
         )}
