@@ -32,7 +32,7 @@ export function SeriesCard({ s, onClick, titleOnly }: { s: Series; onClick?: () 
         <b>{s.title}</b>
         {!titleOnly && <span>{p ? `Ch. ${resumeTarget(s).chapter} of ${lastListedId(s)}` : `${total} chapter${total === 1 ? "" : "s"}`}</span>}
       </div>
-      {p && !titleOnly && <div className="bar" style={{ width: `${Math.min(100, Math.round((100 * (p.read?.length || 0)) / total))}%` }} />}
+      {p && <div className="bar" style={{ width: `${Math.min(100, Math.round((100 * (p.read?.length || 0)) / total))}%` }} />}
       {hover.rect && <HoverCard s={s} anchor={hover.rect} onClose={hover.close} />}
     </div>
   );
