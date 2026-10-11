@@ -39,15 +39,22 @@ interface Item {
   node: ReactNode;
 }
 
-/** Asura results exist only for the query the user explicitly searched (`for`). */
-type Catalog = { state: "idle" | "loading" | "error"; for: string; hits: CatalogHit[]; error?: string };
+/** Site results exist only for the query the user explicitly searched (`for`). Both sites are
+ *  asked at once; one failing still shows the other's hits (`errors` names the failed ones). */
+type Catalog = { state: "idle" | "loading" | "error"; for: string; hits: CatalogHit[]; errors: string[] };
+
+const SITES = [
+  { id: "asura", label: "Asura Scans", url: (q: string) => `/api/catalog?q=${encodeURIComponent(q)}` },
+  { id: "mgeko", label: "mgeko", url: (q: string) => `/api/catalog?q=${encodeURIComponent(q)}&source=mgeko` },
+] as const;
+const siteLabel = (h: CatalogHit) => (h.source === "mgeko" ? "mgeko" : "Asura Scans");
 
 /** #/search?q= — library, chapters and the Asura catalogue in one box ("/" from anywhere). */
 export default function SearchPage({ q: initial }: { q: string }) {
   const { library, progressVersion } = useLibrary();
   const [q, setQ] = useState(initial);
   const [active, setActive] = useState(0);
-  const [catalog, setCatalog] = useState<Catalog>({ state: "idle", for: "", hits: [] });
+  const [catalog, setCatalog] = useState<Catalog>({ state: "idle", for: "", hits: [], errors: [] });
   const [added, setAdded] = useState<Record<string, "adding" | "added">>({});
   const [listDraft, setListDraft] = useState<Draft | null>(null);
   const { entries } = useWatchlist();
@@ -62,20 +69,25 @@ export default function SearchPage({ q: initial }: { q: string }) {
     setActive(0);
   }, [query]);
 
-  // Asura Scans is only searched when asked (button / Enter on it), never while typing.
-  const searchAsura = () => {
+  // The sites are only searched when asked (button / Enter on it), never while typing.
+  const searchSites = () => {
     if (query.length < 2) return;
     const forQ = query;
-    setCatalog({ state: "loading", for: forQ, hits: [] });
-    api<CatalogHit[]>(`/api/catalog?q=${encodeURIComponent(forQ)}`)
-      .then((hits) => setCatalog((c) => (c.for === forQ ? { state: "idle", for: forQ, hits } : c)))
-      .catch((e) =>
-        setCatalog((c) =>
-          c.for === forQ ? { state: "error", for: forQ, hits: [], error: e instanceof Error ? e.message : "Search failed" } : c
-        )
-      );
+    setCatalog({ state: "loading", for: forQ, hits: [], errors: [] });
+    Promise.allSettled(SITES.map((site) => api<CatalogHit[]>(site.url(forQ)))).then((res) => {
+      const hits: CatalogHit[] = [];
+      const errors: string[] = [];
+      res.forEach((r, i) => {
+        if (r.status === "fulfilled") hits.push(...r.value.map((h) => ({ ...h, source: h.source ?? SITES[i].id })));
+        else errors.push(`${SITES[i].label}: ${r.reason instanceof Error ? r.reason.message : "search failed"}`);
+      });
+      // Best match first, whichever site it's on (Asura first on a tie: stable sort).
+      hits.sort((a, b) => b.score - a.score);
+      const state = errors.length === SITES.length ? "error" : "idle";
+      setCatalog((c) => (c.for === forQ ? { state, for: forQ, hits, errors } : c));
+    });
   };
-  const asuraDone = catalog.for === query && catalog.state === "idle";
+  const sitesDone = catalog.for === query && catalog.state === "idle";
 
   const owned = useMemo(() => new Set(library.map((s) => s.slug)), [library]);
 
@@ -139,14 +151,14 @@ export default function SearchPage({ q: initial }: { q: string }) {
 
     if (query.length >= 2 && catalog.for !== query) {
       out.push({
-        key: "asura-search",
+        key: "site-search",
         group: "catalog",
-        open: searchAsura,
+        open: searchSites,
         node: (
           <div className="sr-row">
             <span className="sr-cover sr-cover-none">⌕</span>
             <span className="sr-text">
-              <b>Search Asura Scans for “{query}”</b>
+              <b>Search Asura Scans and mgeko for “{query}”</b>
               <small>Find comics that aren’t in your library yet</small>
             </span>
           </div>
@@ -181,7 +193,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
             <span className="sr-cover sr-cover-none">+</span>
             <span className="sr-text">
               <b>{h.title}</b>
-              <small>Asura Scans · not in your library</small>
+              <small>{siteLabel(h)} · not in your library</small>
             </span>
             {onList ? (
               <a className="sr-listed" href={`#/list/${onList.id}`} onClick={(e) => e.stopPropagation()}>
@@ -235,7 +247,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
   const groups: { id: Item["group"]; label: string }[] = [
     { id: "chapters", label: "Chapters" },
     { id: "library", label: "Your library" },
-    { id: "catalog", label: "Add from Asura Scans" },
+    { id: "catalog", label: "Add from Asura Scans or mgeko" },
   ];
 
   return (
@@ -245,7 +257,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
           ref={input}
           className="sr-input"
           type="search"
-          placeholder="Search comics, chapters (e.g. “sword sense 52”), or Asura Scans"
+          placeholder="Search comics, chapters (e.g. “sword sense 52”), or Asura Scans and mgeko"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={onKey}
@@ -263,17 +275,20 @@ export default function SearchPage({ q: initial }: { q: string }) {
             const catalogNote =
               g.id === "catalog" && catalog.for === query
                 ? catalog.state === "loading"
-                  ? <p className="sr-note">Searching Asura Scans…</p>
-                  : catalog.state === "error"
-                    ? (
-                        <p className="sr-note err">
-                          Couldn’t search Asura Scans ({catalog.error}).{" "}
-                          <button className="sr-linkbtn" onClick={searchAsura}>Retry</button>
-                        </p>
-                      )
-                    : asuraDone && !list.length
-                      ? <p className="sr-note">Nothing new on Asura Scans for “{query}”.</p>
-                      : null
+                  ? <p className="sr-note">Searching Asura Scans and mgeko…</p>
+                  : (
+                      <>
+                        {catalog.errors.length > 0 && (
+                          <p className="sr-note err">
+                            Couldn’t search {catalog.errors.join("; ")}.{" "}
+                            <button className="sr-linkbtn" onClick={searchSites}>Retry</button>
+                          </p>
+                        )}
+                        {sitesDone && !list.length && (
+                          <p className="sr-note">Nothing new on {catalog.errors.length ? "the other site" : "Asura Scans or mgeko"} for “{query}”.</p>
+                        )}
+                      </>
+                    )
                 : null;
             if (!list.length && !catalogNote) return null;
             return (

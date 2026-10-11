@@ -65,6 +65,7 @@ export interface CatalogHit {
   title: string;
   url: string;
   score: number;
+  source?: "asura" | "mgeko";
 }
 
 export interface IngestJob {
