@@ -29,6 +29,12 @@ export function listedIds(s: Series): string[] {
   );
 }
 
+/** How many chapters the series has, counting the ones not added yet. */
+export const chapterCount = (s: Series) => s.chapters.length + (s.pending?.length || 0);
+
+/** The newest chapter the source lists (added or not). */
+export const lastListedId = (s: Series) => listedIds(s).at(-1) ?? "";
+
 /** Which chapter "Read"/"Continue" opens: the next one once the current is finished. Works by
  *  chapter number over everything listed, so a place on (or a next chapter that is) a chapter
  *  never added still resolves; the reader adds such a chapter when it opens it. */

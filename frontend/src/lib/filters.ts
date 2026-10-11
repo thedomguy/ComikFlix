@@ -1,6 +1,6 @@
 // Library filtering/sorting (LibraryPage) and fuzzy matching (SearchPage). Reading-state rules
 // come from lib/series so these agree with home and the cards.
-import { lastReadAt, latestDate, newSinceRead, progressOf, unreadCount } from "./series";
+import { chapterCount, lastReadAt, latestDate, newSinceRead, progressOf, unreadCount } from "./series";
 import type { Chapter, Series } from "./types";
 
 // ---- text ----
@@ -201,7 +201,7 @@ export function sortLibrary(list: Series[], sort: SortKey) {
     latest: latestDate,
     title: () => 0,
     rating: (s) => s.rating ?? -1,
-    chapters: (s) => s.chapters.length,
+    chapters: (s) => chapterCount(s),
     unread: (s) => (progressOf(s.slug) ? unreadCount(s) : -1),
   };
   const k = key[sort];

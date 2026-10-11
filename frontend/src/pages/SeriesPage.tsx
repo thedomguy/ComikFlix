@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { bg, fmtDate, fmtSize } from "../lib/format";
 import { startIngest, useIngestJobs } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
-import { progressOf, resumeTarget, totalPages } from "../lib/series";
+import { chapterCount, progressOf, resumeTarget, totalPages } from "../lib/series";
 import { store } from "../lib/store";
 import { toast } from "../lib/toast";
 import type { ReleaseForecast, Series } from "../lib/types";
@@ -122,7 +122,7 @@ function Sheet({
           <div>
             <div className="meta">
               <span className="pill">{(s.status || "ongoing").replace(/^./, (c) => c.toUpperCase())}</span>
-              <span>{s.chapters.length} chapters</span>
+              <span>{chapterCount(s)} chapters</span>
               <span>{totalPages(s)} pages</span>
               {s.size ? <span>{fmtSize(s.size)}</span> : null}
               {s.rating ? <span>★ {Number(s.rating).toFixed(1)}</span> : null}

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { bg } from "../lib/format";
-import { progressOf, resumeTarget, unreadCount } from "../lib/series";
+import { lastListedId, progressOf, resumeTarget, unreadCount } from "../lib/series";
 import type { Series } from "../lib/types";
 
 /** Netflix-style preview that pops over a card on desktop hover: banner, Continue / chapters /
@@ -11,7 +11,6 @@ export function HoverCard({ s, anchor, onClose }: { s: Series; anchor: DOMRect; 
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const p = progressOf(s.slug);
   const r = resumeTarget(s);
-  const idx = s.chapters.findIndex((c) => c.id === r.chapter);
   const unread = p ? unreadCount(s) : 0;
   const done = !!p && (p.read || []).includes(p.chapter) && p.chapter === r.chapter;
   const frac = p && p.chapter === r.chapter && !done ? Math.max(0, Math.min(1, p.frac || 0)) : 0;
@@ -76,7 +75,7 @@ export function HoverCard({ s, anchor, onClose }: { s: Series; anchor: DOMRect; 
               <span style={{ width: `${frac * 100}%` }} />
             </div>
             <span className="hc-muted">
-              {idx + 1} of {s.chapters.length}
+              Ch. {r.chapter} of {lastListedId(s)}
             </span>
           </div>
         )}

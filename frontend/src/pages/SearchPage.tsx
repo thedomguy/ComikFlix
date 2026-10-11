@@ -4,7 +4,7 @@ import { bg } from "../lib/format";
 import { findChapter, parseChapterQuery, searchLibrary } from "../lib/filters";
 import { startIngest } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
-import { byReadingOrder, progressOf, resumeTarget, unreadCount } from "../lib/series";
+import { byReadingOrder, chapterCount, progressOf, resumeTarget, unreadCount } from "../lib/series";
 import { toast } from "../lib/toast";
 import type { CatalogHit, Series } from "../lib/types";
 import { NewEntry, type Draft } from "../components/watchlist/EntryEditor";
@@ -131,7 +131,7 @@ export default function SearchPage({ q: initial }: { q: string }) {
           <Row
             s={s}
             title={s.title}
-            sub={[s.status, `${s.chapters.length} chapters`, progressOf(s.slug) ? `${unreadCount(s)} unread` : null].filter(Boolean).join(" · ")}
+            sub={[s.status, `${chapterCount(s)} chapters`, progressOf(s.slug) ? `${unreadCount(s)} unread` : null].filter(Boolean).join(" · ")}
           />
         ),
       });

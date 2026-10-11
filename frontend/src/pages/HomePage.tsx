@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { bg, fmtSize } from "../lib/format";
 import { useLibrary } from "../lib/library";
-import { byReadingOrder, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
+import { byReadingOrder, chapterCount, latestDate, newSinceRead, progressOf, releaseEvents, resumeTarget, totalPages, type ReleaseEvent } from "../lib/series";
 import { SeriesCard } from "../components/SeriesCard";
 import { WatchCard } from "../components/watchlist/WatchCard";
 import { useWatchlist } from "../lib/watchlist";
@@ -91,7 +91,7 @@ export default function HomePage() {
           <h1>{hero.title}</h1>
           <div className="meta">
             <span className="pill">{hero.status || "Ongoing"}</span>
-            <span>{hero.chapters.length} chapters</span>
+            <span>{chapterCount(hero)} chapters</span>
             <span>{totalPages(hero)} pages</span>
             {hero.size ? <span>{fmtSize(hero.size)}</span> : null}
           </div>

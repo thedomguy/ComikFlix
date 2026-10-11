@@ -13,7 +13,7 @@ import {
   type SortKey,
 } from "../lib/filters";
 import { useLibrary } from "../lib/library";
-import { latestChapter, progressOf, unreadCount } from "../lib/series";
+import { chapterCount, latestChapter, progressOf, unreadCount } from "../lib/series";
 import type { Series } from "../lib/types";
 import { SeriesCard } from "../components/SeriesCard";
 import { FilterPanel } from "../components/library/FilterPanel";
@@ -155,7 +155,7 @@ function ListView({ list, sort, onSort }: { list: Series[]; sort: SortKey; onSor
               <small>{[s.type, (s.genres || []).slice(0, 3).join(", ")].filter(Boolean).join(" · ")}</small>
             </span>
             <span className="lib-c lib-status">{s.status || "—"}</span>
-            <span className="lib-c">{s.chapters.length}</span>
+            <span className="lib-c">{chapterCount(s)}</span>
             <span className="lib-c">{p ? unreadCount(s) : "—"}</span>
             <span className="lib-c">{p ? (p.readAt ? ago(p.readAt) : "Imported") : "Not started"}</span>
             <span className="lib-c">{last?.date ? `Ch. ${last.id} · ${fmtDate(last.date)}` : last ? `Ch. ${last.id}` : "—"}</span>
