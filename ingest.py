@@ -29,7 +29,7 @@ import urllib.error
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -180,35 +180,6 @@ def fetch_series_info(slug: str) -> dict:
     }
 
 
-def estimate_release(chapters: list[dict], status: str | None) -> dict | None:
-    """Forecast the next chapter of an ongoing series from its recent release cadence.
-
-    Takes the last 10 chapters, collapses same-day batches, and uses the median gap between
-    release days as the interval (median, so one long hiatus doesn't skew it). Used later to
-    schedule automatic syncs. Returns None for finished/hiatus series or too little history.
-    """
-    if (status or "").lower() != "ongoing":
-        return None
-    stamps = sorted(d for d in (_parse_iso(c.get("published_at")) for c in chapters) if d)
-    if len(stamps) < 3:
-        return None
-    recent = stamps[-10:]
-    days = sorted({d.date() for d in recent})
-    gaps = sorted((b - a).days for a, b in zip(days, days[1:]))
-    if not gaps:
-        return None
-    mid = len(gaps) // 2
-    interval = gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) / 2
-    interval = min(max(interval, 1), 30)
-    last = stamps[-1]
-    return {
-        "interval_days": round(interval, 1),
-        "last_published": last.isoformat(),
-        "next_expected": (last + timedelta(days=interval)).isoformat(),
-        "based_on": len(recent),
-    }
-
-
 def _upload_cover(client: r2.R2Client, slug: str, cover_url: str) -> tuple[str, str] | None:
     """Download cover to a temp file, upload to R2, return (key, public_url)."""
     ext = Path(urlparse(cover_url).path).suffix or ".webp"
@@ -265,7 +236,7 @@ def save_series_info(
     (stores r2 key in cover_key; cover_url stays the Asura source for CDN reading).
 
     Descriptive fields only fill when missing unless overwrite=True; volatile fields
-    (status, rating, chapter lists, release forecast) always refresh.
+    (status, rating, chapter lists) always refresh.
     """
     cover_src = info.get("cover_url")  # Asura/original cover
     cover_key = None
@@ -280,12 +251,10 @@ def save_series_info(
 
     if info.get("moved_from"):
         db.move_series(info["moved_from"], info["slug"])
-    release = estimate_release(info["chapters"], info.get("status"))
     db_ingest.upsert_series(
         info,
         cover_key=cover_key,
         cover_url=cover_src,  # always the remote Asura/source cover URL
-        release=release,
         overwrite=overwrite,
     )
     _sync_chapter_metadata(info, overwrite=overwrite)

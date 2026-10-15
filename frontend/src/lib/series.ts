@@ -86,9 +86,16 @@ export interface ReleaseEvent {
 }
 
 const DAY = 86400000;
+const WEEK = 7 * DAY;
 
-/** Released chapters plus upcoming ones in [from, to). Upcoming: a manual release date wins;
- *  otherwise the ingest forecast (next_expected + n * interval) for ongoing series. */
+export const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/** A YYYY-MM-DD day as local noon (ms), so it lands on that day in any timezone. */
+export const dayTs = (day: string) => Date.parse(`${day.slice(0, 10)}T12:00:00`);
+
+/** Released chapters plus upcoming ones in [from, to). Every series is assumed weekly: upcoming
+ *  chapters of ongoing series fall on its release day each week, from next_release.next_expected.
+ *  "manual" when the user set the release day. */
 export function releaseEvents(library: Series[], from: Date, to: Date): ReleaseEvent[] {
   const out: ReleaseEvent[] = [];
   const now = Date.now();
@@ -98,34 +105,14 @@ export function releaseEvents(library: Series[], from: Date, to: Date): ReleaseE
       const t = chapterTs(c);
       if (t && t >= +from && t < +to) out.push({ ...base, chapter: c.id, date: new Date(t), kind: "released" });
     }
-    const status = (s.status || "").toLowerCase();
-    if (status && !["ongoing", "season end", "hiatus"].includes(status)) continue; // completed/dropped
     const f = s.next_release;
+    if ((s.status || "").toLowerCase() !== "ongoing" || !f) continue;
     const lastNum = Math.floor(parseFloat(latestChapter(s)?.id || "0")) || 0;
-    const lastPub = f?.last_published ? Date.parse(f.last_published) : latestDate(s);
-    const interval = f?.interval_days && f.interval_days > 0 ? f.interval_days * DAY : 0;
-    let first: number | null = null;
-    let kind: ReleaseEvent["kind"] = "forecast";
-    if (s.release_date) {
-      const m = Date.parse(`${s.release_date}T12:00:00`);
-      if (m > lastPub) {
-        first = m;
-        kind = "manual";
-      }
-    }
-    if (first == null && f?.next_expected) first = Date.parse(f.next_expected);
-    if (first == null) continue;
-    for (let k = 0, t = first; t < +to && k < 60; k++, t += interval) {
+    const kind = s.release_day != null ? "manual" : "forecast";
+    for (let k = 0, t = dayTs(f.next_expected); t < +to && k < 60; k++, t += WEEK) {
       if (t >= +from) {
-        out.push({
-          ...base,
-          chapter: String(lastNum + 1 + k),
-          date: new Date(t),
-          kind: k === 0 ? kind : "forecast",
-          overdue: t < now - DAY,
-        });
+        out.push({ ...base, chapter: String(lastNum + 1 + k), date: new Date(t), kind, overdue: t < now - DAY });
       }
-      if (!interval) break;
     }
   }
   return out.sort((a, b) => +a.date - +b.date);

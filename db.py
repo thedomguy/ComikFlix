@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS series (
     remote_chapters_json TEXT,
     locked_chapters_json TEXT,
     release_json TEXT,
-    release_date TEXT,
+    release_day INTEGER,
     info_updated_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -279,6 +279,16 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(series)")}
     if "status_manual" not in cols:
         conn.execute("ALTER TABLE series ADD COLUMN status_manual INTEGER NOT NULL DEFAULT 0")
+    # release_day: the weekday chapters come out (0=Mon … 6=Sun), set by hand. It replaced
+    # release_date, a one-off date that went stale with every new chapter (README: Assumptions).
+    if "release_day" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN release_day INTEGER")
+    if "release_date" in cols:
+        conn.execute(
+            "UPDATE series SET release_day = (CAST(strftime('%w', release_date) AS INTEGER) + 6) % 7 "
+            "WHERE release_date IS NOT NULL"
+        )
+        conn.execute("ALTER TABLE series DROP COLUMN release_date")
 
 
 def init_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -480,12 +490,12 @@ def upsert_series(row: dict) -> None:
             INSERT INTO series (
                 slug, title, description, genres_json, author, artist, type, status,
                 rating, bookmarks, alt_titles_json, cover_key, cover_url, source_url,
-                remote_chapters_json, locked_chapters_json, release_json, release_date,
+                remote_chapters_json, locked_chapters_json,
                 info_updated_at, created_at, updated_at
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
+                ?, ?,
                 ?, ?, ?
             )
             ON CONFLICT(slug) DO UPDATE SET
@@ -504,8 +514,6 @@ def upsert_series(row: dict) -> None:
                 source_url = excluded.source_url,
                 remote_chapters_json = excluded.remote_chapters_json,
                 locked_chapters_json = excluded.locked_chapters_json,
-                release_json = excluded.release_json,
-                release_date = COALESCE(excluded.release_date, series.release_date),
                 info_updated_at = excluded.info_updated_at,
                 updated_at = excluded.updated_at
             """,
@@ -526,8 +534,6 @@ def upsert_series(row: dict) -> None:
                 row.get("source_url"),
                 _dumps(row.get("remote_chapters")),
                 _dumps(row.get("locked_chapters")),
-                _dumps(row.get("release")),
-                row.get("release_date"),
                 row.get("info_updated_at"),
                 created,
                 row.get("updated_at") or now,
@@ -597,11 +603,26 @@ def _replace_pages(conn: sqlite3.Connection, series_slug: str, chapter_id: str, 
 
 
 SERIES_STATUSES = ("ongoing", "completed", "hiatus", "dropped")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def parse_weekday(val: Any) -> int | None:
+    """0=Mon … 6=Sun from a number or a day name ('fri', 'Friday'); None or '' is no day."""
+    if val is None or val == "":
+        return None
+    text = str(val).strip().lower()
+    if text.isdigit() and int(text) < 7:
+        return int(text)
+    for i, name in enumerate(WEEKDAYS):
+        if len(text) >= 3 and name.startswith(text):
+            return i
+    raise ValueError("release_day must be a weekday: 0 (Monday) to 6 (Sunday) or its name")
 
 
 def patch_series(slug: str, fields: dict) -> dict | None:
-    """Update editable series fields: release_date, and status (set by hand it sticks through
-    source refreshes; "auto" hands it back to the source, which sets it on the next refresh)."""
+    """Update editable series fields: release_day (the weekday chapters come out), and status
+    (set by hand it sticks through source refreshes; "auto" hands it back to the source, which
+    sets it on the next refresh)."""
     allowed = {}
     if "status" in fields:
         val = str(fields["status"] or "auto").strip().lower()
@@ -611,12 +632,8 @@ def patch_series(slug: str, fields: dict) -> dict | None:
             allowed["status"], allowed["status_manual"] = val, 1
         else:
             raise ValueError(f"status must be one of {', '.join(SERIES_STATUSES)} or auto")
-    if "release_date" in fields:
-        val = fields["release_date"]
-        if val is None or val == "":
-            allowed["release_date"] = None
-        else:
-            allowed["release_date"] = str(val)
+    if "release_day" in fields:
+        allowed["release_day"] = parse_weekday(fields["release_day"])
     if not allowed:
         row = get_conn().execute("SELECT slug FROM series WHERE slug = ?", (slug,)).fetchone()
         return {"slug": slug} if row else None

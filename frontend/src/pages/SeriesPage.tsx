@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { bg, fmtDate, fmtSize } from "../lib/format";
 import { startIngest, useIngestJobs } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
-import { chapterCount, progressOf, resumeTarget, totalPages } from "../lib/series";
+import { WEEKDAYS, chapterCount, dayTs, progressOf, resumeTarget, totalPages } from "../lib/series";
 import { store } from "../lib/store";
 import { toast } from "../lib/toast";
 import type { ReleaseForecast, Series } from "../lib/types";
@@ -15,21 +15,12 @@ function updateStartChapter(s: Series) {
   return Number.isFinite(max) && max > 0 ? max : 1;
 }
 
-/** API/ISO date -> YYYY-MM-DD for <input type="date">. */
-function toDateInput(val: string | null) {
-  if (!val) return "";
-  if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10);
-  const d = new Date(val);
-  if (isNaN(+d)) return "";
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 function nextReleaseLabel(nr: ReleaseForecast) {
-  const t = Date.parse(nr.next_expected);
+  const t = dayTs(nr.next_expected);
   if (isNaN(t)) return null;
   const days = Math.round((t - Date.now()) / 864e5);
   const rel = days > 1 ? `in ${days} days` : days === 1 ? "tomorrow" : days === 0 ? "today" : "overdue";
-  return `~${fmtDate(nr.next_expected)} (${rel}) · about every ${nr.interval_days} days`;
+  return `~${fmtDate(new Date(t).toISOString())} (${rel}) · every ${WEEKDAYS[nr.release_day]}`;
 }
 
 /** #/series/<slug>: a modal over the home page on desktop, a full page on mobile. */
@@ -150,7 +141,7 @@ function Sheet({
                 Genres: <span>{s.genres.join(", ")}</span>
               </div>
             )}
-            <ReleaseDate s={s} refresh={refresh} />
+            <ReleaseDay s={s} refresh={refresh} />
             {nextRel && (
               <div>
                 Next chapter: <span>{nextRel}</span>
@@ -177,19 +168,20 @@ function Sheet({
   );
 }
 
-function ReleaseDate({ s, refresh }: { s: Series; refresh: () => Promise<void> }) {
-  const [value, setValue] = useState(toDateInput(s.release_date));
-  const [hint, setHint] = useState<{ text: string; cls: string }>({ text: s.release_date ? fmtDate(s.release_date) : "", cls: "" });
+/** The weekday chapters come out; unset, the latest chapter's weekday counts (server.next_release). */
+function ReleaseDay({ s, refresh }: { s: Series; refresh: () => Promise<void> }) {
+  const [value, setValue] = useState(s.release_day == null ? "" : String(s.release_day));
+  const [hint, setHint] = useState<{ text: string; cls: string }>({ text: "", cls: "" });
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
-    const release_date = value || null;
+    const release_day = value === "" ? null : Number(value);
     setSaving(true);
     setHint({ text: "Saving…", cls: "" });
     try {
-      await api(`/api/series/${encodeURIComponent(s.slug)}`, { method: "PATCH", json: { release_date } });
-      setHint({ text: release_date ? fmtDate(release_date) : "Cleared", cls: "ok" });
-      toast("Release date updated");
+      await api(`/api/series/${encodeURIComponent(s.slug)}`, { method: "PATCH", json: { release_day } });
+      setHint({ text: release_day == null ? "Cleared" : `Every ${WEEKDAYS[release_day]}`, cls: "ok" });
+      toast("Release day updated");
       refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not save";
@@ -201,9 +193,16 @@ function ReleaseDate({ s, refresh }: { s: Series; refresh: () => Promise<void> }
 
   return (
     <div className="release-row">
-      <div className="release-label">Release date:</div>
+      <div className="release-label">Release day:</div>
       <div className="release-edit">
-        <input type="date" className="release-input" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Release date" />
+        <select className="release-input" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Release day">
+          <option value="">Same as latest chapter</option>
+          {WEEKDAYS.map((d, i) => (
+            <option key={d} value={i}>
+              {d}
+            </option>
+          ))}
+        </select>
         <button type="button" className="release-save" disabled={saving} onClick={save}>
           Save
         </button>

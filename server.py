@@ -22,6 +22,7 @@ import queue
 import re
 import threading
 import webbrowser
+from datetime import datetime, timedelta
 from functools import partial
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -115,6 +116,24 @@ def _first_page_src(slug: str, chapter_id: str) -> str | None:
     return _page_src(pg["cdn_url"]) if pg else None
 
 
+def next_release(release_day: int | None, dates: list[str | None]) -> dict | None:
+    """When the next chapter is due. Every series is assumed weekly (README: Assumptions): it
+    comes on the first release day after the latest chapter. The release day is the one set by
+    hand, else the weekday the latest chapter came out. Days are in the server's local time."""
+    stamps = []
+    for d in dates:
+        try:
+            stamps.append(datetime.fromisoformat(d.replace("Z", "+00:00")).astimezone())
+        except (AttributeError, ValueError):
+            pass
+    if not stamps:
+        return None
+    last = max(stamps)
+    day = last.weekday() if release_day is None else release_day
+    due = last.date() + timedelta(days=(day - last.weekday() - 1) % 7 + 1)
+    return {"release_day": day, "last_published": last.isoformat(), "next_expected": due.isoformat()}
+
+
 def scan_library() -> list[dict]:
     """Thin library index: series + chapter metadata, no page URL arrays.
 
@@ -129,7 +148,8 @@ def scan_library() -> list[dict]:
         chapters_out = []
         pending = []
         first_source_url = None
-        for ch in db.list_chapters(slug):
+        chapter_rows = db.list_chapters(slug)
+        for ch in chapter_rows:
             page_count = _chapter_page_count(slug, ch)
             if page_count <= 0:
                 if ch["source_url"]:
@@ -154,7 +174,6 @@ def scan_library() -> list[dict]:
         backdrop = backdrop or poster
 
         remote = _json_field(row["remote_chapters_json"])
-        release = _json_field(row["release_json"])
         genres = _json_field(row["genres_json"], []) or []
         alt_titles = _json_field(row["alt_titles_json"], []) or []
 
@@ -171,8 +190,8 @@ def scan_library() -> list[dict]:
             "type": row["type"],
             "rating": row["rating"],
             "alt_titles": alt_titles,
-            "next_release": release,
-            "release_date": row["release_date"],
+            "next_release": next_release(row["release_day"], [ch["published_at"] for ch in chapter_rows]),
+            "release_day": row["release_day"],  # set by hand, 0=Mon … 6=Sun
             "remote_total": len(remote) if isinstance(remote, list) else None,
             "source_url": row["source_url"] or first_source_url,
             "poster": poster,

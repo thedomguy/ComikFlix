@@ -34,7 +34,6 @@ def upsert_series(
     *,
     cover_key: str | None = None,
     cover_url: str | None = None,
-    release: dict | None = None,
     overwrite: bool = False,
 ) -> None:
     """Merge scraped series info into SQLite via db.upsert_series."""
@@ -62,8 +61,6 @@ def upsert_series(
             "source_url": info.get("source_url"),
             "remote_chapters": remote,
             "locked_chapters": locked,
-            "release": release,
-            "release_date": None,
             "info_updated_at": _now(),
         }
     else:
@@ -98,9 +95,6 @@ def upsert_series(
             "source_url": info.get("source_url") or existing["source_url"],
             "remote_chapters": remote,
             "locked_chapters": locked,
-            "release": release if release is not None else db._loads(existing["release_json"]),
-            # Never clobber user-editable release_date from scrape
-            "release_date": existing["release_date"],
             "info_updated_at": _now(),
         }
     db.upsert_series(row)

@@ -18,12 +18,11 @@ export interface Page {
   aspect?: string | null;
 }
 
-/** Forecast computed at ingest from recent chapter dates (see ingest.estimate_release). */
+/** When the next chapter is due (server.next_release). Every series is assumed weekly. */
 export interface ReleaseForecast {
-  interval_days: number;
+  release_day: number; // 0=Mon … 6=Sun: the one set by hand, else the latest chapter's weekday
   last_published: string;
-  next_expected: string;
-  based_on: number;
+  next_expected: string; // YYYY-MM-DD (server's local day)
 }
 
 export interface Series {
@@ -40,7 +39,7 @@ export interface Series {
   rating: number | null;
   alt_titles: string[];
   next_release: ReleaseForecast | null;
-  release_date: string | null; // manual override, YYYY-MM-DD
+  release_day: number | null; // set by hand, 0=Mon … 6=Sun
   remote_total: number | null; // chapters on the source (incl. not fetched)
   source_url: string | null;
   poster: string | null;
