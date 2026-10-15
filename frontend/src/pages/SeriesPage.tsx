@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { bg, fmtDate, fmtSize } from "../lib/format";
-import { startIngest, useIngestJobs } from "../lib/ingest";
+import { startIngest, useIngestJobs, watchJob, type LiveJob } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
 import { WEEKDAYS, chapterCount, dayTs, progressOf, resumeTarget, totalPages } from "../lib/series";
 import { store } from "../lib/store";
@@ -65,7 +65,7 @@ function Sheet({
   s: Series;
   mode: "page" | "modal";
   close: () => void;
-  jobs: { slug: string; state: string }[];
+  jobs: LiveJob[];
   refresh: () => Promise<void>;
   progressVersion: number;
 }) {
@@ -73,6 +73,7 @@ function Sheet({
   // Finished series aren't checked for new chapters (set the status back to ongoing to resume).
   const ended = ["completed", "dropped"].includes((s.status || "").toLowerCase());
   const updating = jobs.some((j) => j.slug === s.slug && j.state === "running");
+  const upToDate = useUpToDate(s.slug, jobs);
   const missing = s.remote_total != null ? Math.max(0, s.remote_total - s.chapters.length - (s.pending?.length || 0)) : 0;
   const nextRel = (s.status || "").toLowerCase() === "ongoing" && s.next_release ? nextReleaseLabel(s.next_release) : null;
   const alts = (s.alt_titles || []).slice(0, 3).join(" • ");
@@ -95,14 +96,24 @@ function Sheet({
               disabled={updating}
               onClick={async () => {
                 try {
-                  await startIngest({ series: s.slug, start_chapter: updateStartChapter(s) });
-                  toast("Checking for new chapters in the background");
+                  const job = await startIngest({ series: s.slug, start_chapter: updateStartChapter(s) });
+                  watchJob(job.id, "sync");
                 } catch (e) {
                   toast(e instanceof Error ? e.message : "Could not start the update");
                 }
               }}
             >
-              {updating ? "⟳ Updating…" : missing ? `⟳ Update (${missing} new)` : "⟳ Check for new chapters"}
+              {updating ? (
+                <>
+                  <span className="spin">⟳</span> Syncing…
+                </>
+              ) : upToDate ? (
+                "✓ Up to date"
+              ) : missing ? (
+                `⟳ Update (${missing} new)`
+              ) : (
+                "⟳ Check for new chapters"
+              )}
             </button>
           )}
         </div>
@@ -166,6 +177,26 @@ function Sheet({
       </div>
     </div>
   );
+}
+
+/** True for a few seconds after this series' sync ends with no new chapters (the progress
+ *  window only opens when a sync finds some). */
+function useUpToDate(slug: string, jobs: LiveJob[]) {
+  const [shown, setShown] = useState<string | null>(null);
+  const last = jobs.find((j) => j.slug === slug); // newest first
+  const nothingNew =
+    !!last &&
+    last.state === "done" &&
+    Date.now() / 1000 - (last.finished || 0) < 10 &&
+    !Object.values(last.chapters).some((c) => c.state !== "cached" && c.state !== "locked");
+  const id = nothingNew ? last!.id : null;
+  useEffect(() => {
+    if (!id) return;
+    setShown(id);
+    const t = setTimeout(() => setShown(null), 4000);
+    return () => clearTimeout(t);
+  }, [id]);
+  return !!id && shown === id;
 }
 
 /** The weekday chapters come out; unset, the latest chapter's weekday counts (server.next_release). */

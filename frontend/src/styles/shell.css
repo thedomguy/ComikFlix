@@ -81,7 +81,7 @@
   .home .rows { padding-bottom: 24px; }
 
   /* things anchored to the bottom sit above the tab bar */
-  body.has-tabs .tray { bottom: calc(58px + var(--safe-bottom)); }
+  body.has-tabs .jobwin { bottom: calc(66px + var(--safe-bottom)); }
   body.has-tabs .toast { bottom: calc(70px + var(--safe-bottom)); }
 
   /* press feedback */

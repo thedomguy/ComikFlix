@@ -20,8 +20,6 @@ const defaults = () => ({
   progress: {},
   readerWidth: 800,
   sortNewest: true,
-  dismissedJobs: [],
-  trayOpen: true,
   autoScroll: defaultAutoScroll(),
 });
 
@@ -91,8 +89,6 @@ function settingsPayload() {
   return {
     readerWidth: state.readerWidth,
     sortNewest: state.sortNewest,
-    trayOpen: state.trayOpen,
-    dismissedJobs: state.dismissedJobs,
     autoScroll: state.autoScroll,
   };
 }
@@ -161,8 +157,6 @@ function readLocalMigration() {
       progress: raw.progress || {},
       readerWidth: raw.readerWidth ?? next.readerWidth,
       sortNewest: raw.sortNewest ?? next.sortNewest,
-      dismissedJobs: Array.isArray(raw.dismissedJobs) ? raw.dismissedJobs : [],
-      trayOpen: raw.trayOpen ?? next.trayOpen,
     });
   } else if (raw && !raw.v && typeof raw === "object") {
     const looksLikeProgress = Object.values(raw).some(
@@ -191,13 +185,6 @@ function readLocalMigration() {
       legacyHit = true;
     }
   } catch {}
-  try {
-    const d = JSON.parse(localStorage.getItem(LEGACY.dismissed) || "[]");
-    if (Array.isArray(d) && d.length) {
-      next.dismissedJobs = d.slice(-200);
-      legacyHit = true;
-    }
-  } catch {}
 
   const hadLocal = hasKey || legacyHit || Object.keys(next.progress).length > 0;
   return hadLocal ? next : null;
@@ -219,8 +206,6 @@ function applySettings(src) {
     if (Number.isFinite(w) && w > 0) state.readerWidth = Math.min(1400, Math.max(400, w));
   }
   if (src.sortNewest != null) state.sortNewest = !!src.sortNewest;
-  if (src.trayOpen != null) state.trayOpen = !!src.trayOpen;
-  if (Array.isArray(src.dismissedJobs)) state.dismissedJobs = src.dismissedJobs.slice(-200);
   if (src.autoScroll != null) state.autoScroll = normalizeAutoScroll(src.autoScroll);
 }
 
@@ -361,26 +346,6 @@ export const store = {
   },
   setSortNewest(v) {
     state.sortNewest = !!v;
-    putSettings();
-  },
-  get trayOpen() {
-    return state.trayOpen;
-  },
-  setTrayOpen(v) {
-    state.trayOpen = !!v;
-    putSettings();
-  },
-  get dismissedJobs() {
-    return new Set(state.dismissedJobs);
-  },
-  dismissJob(id) {
-    const set = new Set(state.dismissedJobs);
-    set.add(id);
-    state.dismissedJobs = [...set].slice(-200);
-    putSettings();
-  },
-  undismissJob(id) {
-    state.dismissedJobs = state.dismissedJobs.filter((x) => x !== id);
     putSettings();
   },
   get autoScroll() {

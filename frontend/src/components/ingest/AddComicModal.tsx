@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { startIngest } from "../../lib/ingest";
+import { startIngest, watchJob } from "../../lib/ingest";
 
-/** "Add a comic": series slug/URL + start chapter (+ optional last chapter) -> background ingest. */
+/** "Add a comic": series slug/URL + start chapter (+ optional last chapter) -> import, with its
+ *  progress in the floating window ("Run in background" hands it to History). */
 export function AddComicModal({ onClose }: { onClose: () => void }) {
   const [series, setSeries] = useState("");
   // Prefilled: only changed when earlier chapters were already read elsewhere.
@@ -32,10 +33,11 @@ export function AddComicModal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setErr("");
     try {
-      await startIngest({ series: s, start_chapter: first, latest: last });
+      const job = await startIngest({ series: s, start_chapter: first, latest: last });
+      watchJob(job.id, "import");
       onClose();
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "Could not start the download");
+      setErr(e2 instanceof Error ? e2.message : "Could not start the import");
       setBusy(false);
     }
   }
@@ -90,7 +92,7 @@ export function AddComicModal({ onClose }: { onClose: () => void }) {
             />
           </div>
           <button className="btn play" type="submit" disabled={busy}>
-            {busy ? "Starting…" : "Add & download"}
+            {busy ? "Starting…" : "Import"}
           </button>
         </form>
         <div className="err" role="alert">

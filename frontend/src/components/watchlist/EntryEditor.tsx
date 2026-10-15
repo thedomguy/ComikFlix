@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { bg, thumb } from "../../lib/format";
-import { startIngest, useIngestJobs } from "../../lib/ingest";
+import { startIngest, useIngestJobs, watchJob } from "../../lib/ingest";
 import { useLibrary } from "../../lib/library";
 import { toast } from "../../lib/toast";
 import type { WatchEntry, WatchStatus } from "../../lib/types";
@@ -340,13 +340,13 @@ export function EditEntry({ entry, onClose }: { entry: WatchEntry; onClose: () =
               disabled={busy || downloading}
               onClick={() =>
                 run(async () => {
-                  await startIngest({ series: entry.asura_slug!, start_chapter: 1 });
-                  toast(`Downloading ${entry.title} in the background`);
+                  const job = await startIngest({ series: entry.asura_slug!, start_chapter: 1 });
+                  watchJob(job.id, "import");
                   refresh();
-                }, "Could not start the download")
+                }, "Could not start the import")
               }
             >
-              {downloading ? "Downloading…" : "Download"}
+              {downloading ? "Importing…" : "Import"}
             </button>
           )}
           {entry.source_url && (

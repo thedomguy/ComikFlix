@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { api } from "../lib/api";
 import { bg } from "../lib/format";
 import { findChapter, parseChapterQuery, searchLibrary } from "../lib/filters";
-import { startIngest } from "../lib/ingest";
+import { startIngest, watchJob } from "../lib/ingest";
 import { useLibrary } from "../lib/library";
 import { byReadingOrder, chapterCount, progressOf, resumeTarget, unreadCount } from "../lib/series";
 import { toast } from "../lib/toast";
@@ -173,9 +173,9 @@ export default function SearchPage({ q: initial }: { q: string }) {
         remember();
         setAdded((a) => ({ ...a, [h.slug]: "adding" }));
         try {
-          await startIngest({ series: h.slug, start_chapter: 1 });
+          const job = await startIngest({ series: h.slug, start_chapter: 1 });
+          watchJob(job.id, "import");
           setAdded((a) => ({ ...a, [h.slug]: "added" }));
-          toast(`Adding ${h.title} — downloading in the background`);
         } catch (e) {
           setAdded((a) => {
             const { [h.slug]: _, ...rest } = a;
@@ -213,10 +213,10 @@ export default function SearchPage({ q: initial }: { q: string }) {
             )}
             {state === "added" ? (
               <a className="sr-added" href="#/downloads" onClick={(e) => e.stopPropagation()}>
-                Added — downloading ›
+                Importing… ›
               </a>
             ) : (
-              <span className="sr-add">{state === "adding" ? "Adding…" : "Download"}</span>
+              <span className="sr-add">{state === "adding" ? "Starting…" : "Import"}</span>
             )}
           </div>
         ),

@@ -1,8 +1,8 @@
-// Download (ingest) jobs: start one and follow the live list. Shared by the add dialog,
-// the tray, the series page and search's "Add from Asura". The tray/UI live in IngestHost.
+// Ingest jobs (importing a comic, syncing one): start one and follow the live list. Shared by
+// the add dialog, the series page, search and the watch list. The progress window lives in
+// IngestHost; the History page (#/downloads) shows every job.
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
-import { store } from "./store";
 import type { IngestJob } from "./types";
 
 export type ChapterState = "queued" | "running" | "done" | "cached" | "failed" | "locked";
@@ -42,16 +42,42 @@ export async function startIngest(opts: {
       ...(opts.latest != null ? { latest: Number(opts.latest) } : {}),
     },
   });
-  store.setTrayOpen(true);
-  store.undismissJob(job.id);
   poll();
   return job;
+}
+
+// ---- the job whose progress window is open ----
+
+/** import: a comic new to the library; sync: new chapters of one already in it. */
+export type JobKind = "import" | "sync";
+export type Watched = { id: string; kind: JobKind } | null;
+
+let watched: Watched = null;
+const watchSubs = new Set<() => void>();
+
+/** Open the progress window for a job this page just started (replaces any other). */
+export function watchJob(id: string, kind: JobKind) {
+  watched = { id, kind };
+  watchSubs.forEach((f) => f());
+}
+
+/** Close the progress window; a running job carries on (History shows it). */
+export function unwatchJob() {
+  if (!watched) return;
+  watched = null;
+  watchSubs.forEach((f) => f());
+}
+
+export function useWatchedJob(): Watched {
+  return useSyncExternalStore(
+    (f) => (watchSubs.add(f), () => void watchSubs.delete(f)),
+    () => watched,
+  );
 }
 
 /** Retry a job's failed/queued chapters, or just `chapter`. Throws ApiError. */
 export async function retryJob(id: string, chapter?: string) {
   await api(`/api/ingest/${id}/retry`, { method: "POST", json: chapter != null ? { chapter } : {} });
-  store.setTrayOpen(true);
   poll();
 }
 
@@ -63,7 +89,6 @@ export async function cancelJob(id: string) {
 // ---- one shared poller for every useIngestJobs() caller ----
 
 let jobs: LiveJob[] = [];
-let loaded = false;
 let timer = 0;
 let inflight = false;
 let again = false;
@@ -78,11 +103,6 @@ async function poll() {
   inflight = true;
   try {
     const list = await api<LiveJob[]>("/api/ingest");
-    if (!loaded) {
-      // Finished jobs from before this page load stay out of the tray.
-      for (const j of list) if (j.state === "done" || j.state === "cancelled") store.dismissJob(j.id);
-      loaded = true;
-    }
     jobs = list.map((j) => ({ ...j, chapters: j.chapters || {}, log: j.log || [] }));
     subs.forEach((f) => f());
   } catch {

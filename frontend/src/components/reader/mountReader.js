@@ -487,6 +487,8 @@ export function mountReader(root, s, chap) {
     ? h("button", { class: "btn play", onclick: () => go(next) }, "Next Chapter ›")
     : null;
   const allBtn = h("button", { class: "btn info", onclick: () => (location.hash = `#/series/${s.slug}`) }, "All Chapters");
+  // Caught up: straight home, rather than Back walking down the stack.
+  const homeBtn = next ? null : h("button", { class: "btn info", onclick: () => (location.hash = "#/") }, "Home");
   // Completion marker: Next Chapter play button when present, else All Chapters.
   const endMarker = nextBtn || allBtn;
   // Watch list nudge once the chapter is done: e.g. "You've read every chapter · Move to Completed".
@@ -521,7 +523,8 @@ export function mountReader(root, s, chap) {
     h("p", {}, next ? `Up next: Chapter ${next.id}` : "No more chapters."),
     wlSlot,
     nextBtn,
-    allBtn
+    allBtn,
+    homeBtn
   );
 
   body.append(strip, end);

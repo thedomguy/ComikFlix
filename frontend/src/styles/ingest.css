@@ -1,11 +1,35 @@
-/* Add-comic dialog + downloads tray (base styles: .ingest, .tray, .job ... in app.css) */
+/* Add-comic dialog + the progress window for an import/sync started on this page
+   (base styles: .ingest, .chips, .chip in app.css) */
 .ingest-modal { z-index: 50; }
 .ingest .close { position: absolute; }
 .ingest h2 { padding-right: 44px; }
 .ingest form .btn:disabled { opacity: .5; cursor: default; }
-.thead:focus-visible { outline: 1px solid #fff; outline-offset: -1px; }
-.job .top { align-items: center; }
-.job .state { overflow: hidden; text-overflow: ellipsis; }
+
+.jobwin {
+  color-scheme: dark; position: fixed; right: max(16px, var(--safe-right));
+  bottom: max(16px, var(--safe-bottom)); z-index: 60; width: 360px;
+  max-width: calc(100vw - 32px - var(--safe-left) - var(--safe-right));
+  padding: 14px 16px; background: #1d1d1d; border: 1px solid #333; border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.7);
+}
+.jw-top { display: flex; align-items: baseline; gap: 10px; }
+.jw-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jw-state { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.jw-state.ok { color: #46d369; }
+.jw-state.bad { color: #ff6b6b; }
+.jw-meter { height: 5px; background: #3a3a3a; border-radius: 3px; margin: 10px 0 8px; overflow: hidden; }
+.jw-meter i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.jw-note { font-size: 13px; color: var(--muted); margin-bottom: 8px; word-break: break-word; }
+.jobwin .chips { margin-bottom: 4px; }
+.jobwin .chip { font-size: 12px; padding: 2px 7px; }
+.jw-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.jw-actions a { margin-right: auto; font-size: 13px; color: var(--muted); }
+.jw-actions .btn { margin: 0; padding: 7px 14px; font-size: 14px; }
+
+/* series page: "Syncing…" spinner on the check button */
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 700px) {
   .ingest { padding: 22px 18px 24px; }
+  .jobwin { left: max(16px, var(--safe-left)); right: max(16px, var(--safe-right)); width: auto; max-width: none; }
 }
