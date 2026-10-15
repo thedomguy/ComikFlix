@@ -404,6 +404,7 @@ html.boot-read .reader.hidden { display: block !important; }
   .series-page .sheet .banner { height: min(42vh, 320px); }
   .sheet h1 { font-size: 28px; }
   .sheet .body { padding-left: 20px; padding-right: 20px; padding-bottom: 40px; }
+  .sheet .banner > div { flex: 1; min-width: 0; } /* full width, not sized by title/button text */
   .sheet .banner .btn { width: 100%; justify-content: center; margin-right: 0; }
   .card { width: 140px; }
   /* series is a real page on mobile with its own back-only header */
