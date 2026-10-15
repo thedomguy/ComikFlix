@@ -78,6 +78,7 @@ export interface IngestJob {
   latest: number | null;
   started: number;
   finished: number | null;
+  moved_from?: string; // the series' old slug when the source moved it during this job
   [k: string]: unknown;
 }
 

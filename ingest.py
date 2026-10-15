@@ -693,6 +693,7 @@ class IngestManager:
             self._log(job, "info", f"Asura moved this series to {info['slug']}; library updated to match")
             with self._lock:
                 job["slug"] = info["slug"]
+                job["moved_from"] = slug  # the app follows open pages to the new slug
         chapters = info["chapters"]
         start = float(job["start"])
         chapters = [c for c in chapters if float(c["number"]) >= start]

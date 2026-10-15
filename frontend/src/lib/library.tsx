@@ -56,7 +56,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     try {
       const pre = early;
       early = null; // only the first refresh may use the boot request; later ones refetch
-      const data = (pre && (await pre)) || (await fetchLibrary());
+      // Progress comes along: when a sync moves a series to a new slug, the server moves its
+      // progress too, and without it the series would look never started (and leave Home's rows).
+      const [data] = await Promise.all([(pre && (await pre)) || fetchLibrary(), store.refreshProgress()]);
       ref.current = data;
       setLibrary(data);
       setError(null);

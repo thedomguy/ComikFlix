@@ -328,6 +328,8 @@ export const store = {
   get ready() {
     return booted;
   },
+  /** Pull progress changed on the server (other devices, Jarvis, a series moved to a new slug). */
+  refreshProgress,
   get() {
     return state;
   },

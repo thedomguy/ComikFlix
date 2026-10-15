@@ -32,8 +32,21 @@ function useJobWatcher(jobs: LiveJob[]) {
   const prevRunning = useRef<Set<string> | null>(null);
   const doneSeen = useRef(0);
   const lastRefresh = useRef(0);
+  const movedSeen = useRef(new Set<string>());
 
   useEffect(() => {
+    // The source moved a series to a new slug: reload, then move an open page there with it.
+    for (const j of jobs) {
+      const old = j.moved_from;
+      if (!old || movedSeen.current.has(j.id)) continue;
+      movedSeen.current.add(j.id);
+      const parts = location.hash.split("/");
+      if (parts[2] !== old) continue;
+      void refresh().then(() => {
+        if (location.hash.split("/")[2] === old) location.replace([...parts.slice(0, 2), j.slug, ...parts.slice(3)].join("/"));
+      });
+    }
+
     const running = new Set(jobs.filter((j) => j.state === "running").map((j) => j.id));
     const done = doneCount(jobs);
     if (prevRunning.current === null) {
